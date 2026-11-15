@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "macros.html" import money_cell with context %}
+{% block title %}Compare · {{ land.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a></div>
+  <h1>Compare studies</h1><div class="muted">All studies and scenarios of this land that ran successfully.</div>
+</div></div>
+<div class="panel table-scroll">
+  <table>
+    <tr><th></th>{% for s in recs %}<th class="num"><a href="/studies/{{ s.id }}">{{ s.name }}</a></th>{% endfor %}</tr>
+    {% for key in keys %}
+    <tr><td>{{ KPI_LABELS[key] }}</td>{% for s in recs %}{% set v = s.result.kpis.get(key) %}<td class="num {{ 'neg' if v is number and v < 0 }}">{{ kpi(key, v) }}</td>{% endfor %}</tr>
+    {% endfor %}
+    <tr><td>Built area m2</td>{% for s in recs %}<td class="num">{{ s.result.built_area_m2|num }}</td>{% endfor %}</tr>
+    <tr><td>Discount rate</td>{% for s in recs %}<td class="num">{{ s.data.finance.discount_rate_annual|pct(0) }}</td>{% endfor %}</tr>
+  </table>
+</div>
+{% endblock %}

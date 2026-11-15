@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field with context %}
+{% block title %}Screening · {{ land.name }}{% endblock %}
+{% block content %}
+{% set k = r.kpis %}
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a></div>
+    <h1>Screening result</h1>
+    <div class="muted">{{ s.created_at.strftime('%d %b %Y %H:%M') }}{% if s.created_by %} · {{ s.created_by.name }}{% endif %}</div>
+  </div>
+  {% if user.can_edit %}
+  <div class="actions">
+    <a class="btn secondary" href="/lands/{{ land.id }}/screen?from={{ s.id }}">Adjust and re-run</a>
+    <form method="post" action="/screenings/{{ s.id }}/to-study">{{ csrf_field() }}<button class="btn">Turn into a full study</button></form>
+  </div>
+  {% endif %}
+</div>
+<div class="verdict {{ r.verdict }}">
+  <div class="big">{{ VERDICT_LABELS[r.verdict] }}</div>
+  <ul>{% for x in r.reasons %}<li>{{ x }}</li>{% endfor %}</ul>
+</div>
+{% if k %}
+<div class="tiles">
+  <div class="tile"><div class="label">Max land price / feddan</div><div class="value">{{ r.residual_price_per_feddan|money if r.residual_price_per_feddan is not none else 'n/a' }}</div></div>
+  <div class="tile"><div class="label">Asking / feddan</div><div class="value">{{ r.asking_price_per_feddan|money }}</div></div>
+  <div class="tile"><div class="label">NPV before tax</div><div class="value {{ 'neg' if k.npv_pre_tax < 0 }}">{{ k.npv_pre_tax|money }}</div></div>
+  <div class="tile"><div class="label">IRR before tax</div><div class="value">{{ k.irr_pre_tax|pct }}</div></div>
+  <div class="tile"><div class="label">Margin on revenue</div><div class="value">{{ k.margin_on_revenue|pct }}</div></div>
+  <div class="tile"><div class="label">Revenue</div><div class="value">{{ k.revenue|money }}</div></div>
+  <div class="tile"><div class="label">Peak funding need</div><div class="value">{{ k.peak_funding_need|money }}</div></div>
+  <div class="tile"><div class="label">Built / sellable m2</div><div class="value" style="font-size:16px">{{ r.built_area_m2|num }} / {{ r.sellable_area_m2|num }}</div></div>
+</div>
+<div class="panel">
+  <h2>Net cash flow by year</h2>
+  {{ chart|safe }}
+  <div class="legend"><span><i style="background:var(--accent)"></i>inflow year</span><span><i style="background:var(--no)"></i>outflow year</span><span><i style="background:#e0a100"></i>running total</span></div>
+</div>
+{% endif %}
+{% if r.warnings %}<div class="panel"><h2>Model notes</h2>{% for w in r.warnings %}<p>{{ w }}</p>{% endfor %}</div>{% endif %}
+<div class="panel">
+  <h2>Inputs used</h2>
+  <div class="grid three">
+  {% for title, keys in groups %}
+    <div><h3>{{ title }}</h3><dl class="facts" style="grid-template-columns: 1fr auto">
+      {% for key in keys %}<dt>{{ labels[key][0] }}</dt><dd class="num">{{ s.inputs.get(key) }}</dd>{% endfor %}
+    </dl></div>
+  {% endfor %}
+  </div>
+</div>
+{% endblock %}

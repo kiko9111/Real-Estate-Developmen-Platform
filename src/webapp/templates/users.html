@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field with context %}
+{% block title %}Team{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Team</h1><div class="muted">Admins manage accounts. Analysts create and edit lands, studies and market data. Viewers can read and download reports.</div></div></div>
+<div class="panel">
+  <table>
+    <tr><th>Name</th><th>Email</th><th>Role</th><th>Active</th><th>New password (optional)</th><th></th><th>Last sign-in</th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.name }}<form id="uf{{ u.id }}" method="post" action="/users/{{ u.id }}">{{ csrf_field() }}</form></td>
+      <td>{{ u.email }}</td>
+      <td><select name="role" form="uf{{ u.id }}">{% for r in roles %}<option value="{{ r }}" {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select></td>
+      <td><input type="checkbox" name="active" value="1" form="uf{{ u.id }}" {{ 'checked' if u.active }}></td>
+      <td><input type="password" name="password" minlength="10" autocomplete="new-password" placeholder="leave blank to keep" form="uf{{ u.id }}"></td>
+      <td><button class="btn small secondary" form="uf{{ u.id }}">Save</button></td>
+      <td class="muted small">{{ u.last_login_at.strftime('%d %b %Y %H:%M') if u.last_login_at else 'never' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="panel" style="max-width:760px">
+  <h2>Add a team member</h2>
+  <form method="post" action="/users">{{ csrf_field() }}
+    <div class="form-row">
+      <div class="field"><label>Name</label><input name="name" required></div>
+      <div class="field"><label>Email</label><input type="email" name="email" required></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Role</label><select name="role">{% for r in roles %}<option value="{{ r }}" {{ 'selected' if r == 'analyst' }}>{{ r }}</option>{% endfor %}</select></div>
+      <div class="field"><label>First password (at least 10 characters)</label><input type="password" name="password" minlength="10" required autocomplete="new-password"></div>
+    </div>
+    <button class="btn">Add</button>
+  </form>
+</div>
+{% endblock %}

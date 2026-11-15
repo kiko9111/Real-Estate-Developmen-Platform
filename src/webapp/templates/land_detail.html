@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, status_badge, verdict_badge with context %}
+{% block title %}{{ land.name }}{% endblock %}
+{% block content %}
+{% set o = land.offer or {} %}{% set lg = land.legal or {} %}
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/">Lands</a></div>
+    <h1>{{ land.name }} {{ status_badge(land.status) }}</h1>
+    <div class="muted">{{ land.area_name }}{% if land.area_name and land.region %}, {% endif %}{{ land.region }}{% if land.governorate %} · {{ land.governorate }}{% endif %} · {{ land.area_m2|num }} m2 ({{ land.area_feddan|num(1) }} feddan)</div>
+  </div>
+  <div class="actions">
+    {% if user.can_edit %}
+    <a class="btn" href="/lands/{{ land.id }}/screen">Quick screening</a>
+    <form method="post" action="/lands/{{ land.id }}/studies">{{ csrf_field() }}<input type="hidden" name="name" value="Base case"><button class="btn secondary">New full study</button></form>
+    <a class="btn secondary" href="/lands/{{ land.id }}/edit">Edit land</a>
+    {% endif %}
+    <a class="btn secondary" href="/lands/{{ land.id }}/conditions">Conditions</a>
+  </div>
+</div>
+
+<div class="grid two">
+  <div class="panel">
+    <h2>The land</h2>
+    <dl class="facts">
+      <dt>Area</dt><dd>{{ land.area_m2|num }} m2 · {{ land.area_feddan|num(2) }} feddan</dd>
+      {% if land.parcels %}<dt>Parcels</dt><dd>{% for p in land.parcels %}{{ p.name or 'parcel' }}: {{ p.area_m2|num }} m2{% if p.notes %} ({{ p.notes }}){% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</dd>{% endif %}
+      {% if land.frontage_m %}<dt>Frontage</dt><dd>{{ land.frontage_m|num }} m {{ land.frontage_type }}</dd>{% endif %}
+      {% if land.depth_m %}<dt>Depth</dt><dd>{{ land.depth_m|num }} m</dd>{% endif %}
+      {% if land.latitude is not none and land.longitude is not none %}<dt>Coordinates</dt><dd>{{ land.latitude }}, {{ land.longitude }}</dd>{% endif %}
+      {% if land.map_url %}<dt>Map</dt><dd><a href="{{ land.map_url }}" target="_blank" rel="noopener noreferrer">Open map</a></dd>{% endif %}
+      {% for c in land.custom_fields %}<dt>{{ c.label }}</dt><dd>{{ c.value }} {{ c.unit }}</dd>{% endfor %}
+    </dl>
+    {% if land.notes %}<p class="muted" style="white-space:pre-wrap;margin-top:12px">{{ land.notes }}</p>{% endif %}
+  </div>
+  <div class="panel">
+    <h2>Offer and legal</h2>
+    <dl class="facts">
+      <dt>Deal</dt><dd>{{ (o.get('deal_type') or 'not entered')|replace('_', ' ') }}{% if o.get('negotiable') %} · negotiable{% endif %}</dd>
+      {% if o.get('asking_price_per_feddan') %}<dt>Asking price</dt><dd>{{ o.asking_price_per_feddan|money }} {{ currency }} per feddan · total {{ (o.asking_price_per_feddan * land.area_feddan)|money }}</dd>{% endif %}
+      {% if o.get('purchase_area_m2') %}<dt>Area to buy</dt><dd>{{ o.purchase_area_m2|num }} m2 ({{ (o.purchase_area_m2 / FEDDAN_M2)|num(1) }} feddan)</dd>{% endif %}
+      {% if o.get('partnership_owner_share') is not none and o.get('partnership_owner_share') != None %}<dt>Partnership</dt><dd>owner {{ o.partnership_owner_share|pct(0) }} of {{ o.get('partnership_basis', 'profit') }}</dd>{% endif %}
+      {% if o.get('payment_terms') %}<dt>Payment terms</dt><dd>{{ o.payment_terms }}</dd>{% endif %}
+      {% if lg.get('title') %}<dt>Title</dt><dd>{{ lg.title }}</dd>{% endif %}
+      {% if lg.get('betterment_fee_per_m2') %}<dt>Betterment fee</dt><dd>{{ lg.betterment_fee_per_m2|num }} per m2{% if lg.get('betterment_paid_share') %}, {{ lg.betterment_paid_share|pct(0) }} paid{% endif %}</dd>{% endif %}
+      {% if lg.get('disputes') %}<dt>Disputes</dt><dd>{{ lg.disputes }}</dd>{% endif %}
+      {% if lg.get('approvals') %}<dt>Approvals</dt><dd>{{ lg.approvals }}</dd>{% endif %}
+    </dl>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="page-head" style="margin-bottom:8px"><h2>Conditions</h2><a href="/lands/{{ land.id }}/conditions">{{ 'Edit' if user.can_edit else 'View' }} conditions</a></div>
+  {% if cond_filled %}
+  <dl class="facts">
+    {% if cond.primary_use %}<dt>Primary use</dt><dd>{{ cond.primary_use|replace('_',' ') }}{% if cond.permitted_uses %} (allowed: {{ cond.permitted_uses|join(', ') }}){% endif %}</dd>{% endif %}
+    {% if cond.far %}<dt>Floor area ratio</dt><dd>{{ cond.far }} → up to {{ (cond.far * land.area_m2)|num }} m2 built</dd>{% endif %}
+    {% if cond.footprint_pct %}<dt>Coverage</dt><dd>{{ cond.footprint_pct|pct }}</dd>{% endif %}
+    {% if cond.max_floors %}<dt>Floors</dt><dd>{{ cond.max_floors }}</dd>{% endif %}
+    {% if cond.max_height_m %}<dt>Height</dt><dd>{{ cond.max_height_m }} m</dd>{% endif %}
+    {% if cond.max_units_per_feddan %}<dt>Density</dt><dd>{{ cond.max_units_per_feddan }} units per feddan</dd>{% endif %}
+    {% if cond.services_share_of_land %}<dt>Services</dt><dd>{{ cond.services_share_of_land|pct }} of land</dd>{% endif %}
+    {% if cond.open_space_share_of_land %}<dt>Open space</dt><dd>{{ cond.open_space_share_of_land|pct }} of land</dd>{% endif %}
+    {% if cond.build_deadline_months %}<dt>Build deadline</dt><dd>{{ cond.build_deadline_months }} months</dd>{% endif %}
+    {% for c in cond.custom %}<dt>{{ c.label }}</dt><dd>{{ c.value }} {{ c.unit }}</dd>{% endfor %}
+  </dl>
+  {% else %}
+  <p class="muted">Not filled in yet. The screening needs at least a floor area ratio (or coverage and floors).</p>
+  {% endif %}
+</div>
+
+<div class="grid two">
+  <div class="panel">
+    <h2>Screenings</h2>
+    {% if land.screenings %}
+    <table>
+      <tr><th>Date</th><th>Verdict</th><th class="num">NPV</th><th class="num">IRR</th><th class="num">Max land price / feddan</th></tr>
+      {% for s in land.screenings[:8] %}
+      <tr>
+        <td><a href="/screenings/{{ s.id }}">{{ s.created_at.strftime('%d %b %Y %H:%M') }}</a><div class="muted small">{{ s.created_by.name if s.created_by else '' }}</div></td>
+        <td>{{ verdict_badge(s.verdict) }}</td>
+        <td class="num">{{ s.result.kpis.get('npv_pre_tax')|money }}</td>
+        <td class="num">{{ s.result.kpis.get('irr_pre_tax')|pct }}</td>
+        <td class="num">{{ s.result.get('residual_price_per_feddan')|money }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">No screening yet.{% if user.can_edit %} <a href="/lands/{{ land.id }}/screen">Run one</a> for a quick go/no-go.{% endif %}</p>{% endif %}
+  </div>
+  <div class="panel">
+    <div class="page-head" style="margin-bottom:8px"><h2>Full studies</h2>{% if land.studies|length > 1 %}<a href="/lands/{{ land.id }}/compare">Compare all</a>{% endif %}</div>
+    {% if land.studies %}
+    <table>
+      <tr><th>Study</th><th class="num">NPV</th><th class="num">IRR</th><th class="num">Margin</th></tr>
+      {% for st in land.studies %}
+      <tr>
+        <td>{% if st.parent_id %}<span class="muted">↳ </span>{% endif %}<a href="/studies/{{ st.id }}">{{ st.name }}</a>
+          {% if st.error %}<div class="neg small">needs fixing</div>{% endif %}</td>
+        {% if st.result %}
+        <td class="num">{{ st.result.kpis.npv_pre_tax|money }}</td><td class="num">{{ st.result.kpis.irr_pre_tax|pct }}</td><td class="num">{{ st.result.kpis.margin_on_revenue|pct }}</td>
+        {% else %}<td colspan="3" class="muted">not run</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">No full study yet.</p>{% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <div class="page-head" style="margin-bottom:8px"><h2>Market around this land</h2>
+    {% if market_location %}<a href="/market?location={{ market_location|urlencode }}&land_id={{ land.id }}">Open market scan for {{ market_location }}</a>{% endif %}</div>
+  {% if not market_location %}<p class="muted">Enter the land's area name or region to match market data.</p>
+  {% elif comps %}
+  <table>
+    <tr><th>Product</th><th class="num">Projects</th><th class="num">Median price / m2</th><th class="num">Range</th><th class="num">Median down payment</th><th class="num">Median years</th></tr>
+    {% for t, srow in stats.by_type.items() %}
+    <tr><td>{{ t }}</td><td class="num">{{ srow.count }}</td>
+      <td class="num">{{ srow.price_per_m2.median|num if srow.price_per_m2 else 'n/a' }}</td>
+      <td class="num">{{ (srow.price_per_m2.min|num ~ ' - ' ~ srow.price_per_m2.max|num) if srow.price_per_m2 else '' }}</td>
+      <td class="num">{{ srow.down_payment_pct.median|pct(0) if srow.down_payment_pct else 'n/a' }}</td>
+      <td class="num">{{ srow.instalment_years.median if srow.instalment_years else 'n/a' }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No comparables for {{ market_location }} yet.</p>{% endif %}
+</div>
+
+{% if user.can_edit %}
+<div class="panel no-print">
+  <h2>Status</h2>
+  <form class="actions" method="post" action="/lands/{{ land.id }}/status">{{ csrf_field() }}
+    <select name="status" style="max-width:220px">{% for s, label in STATUS_LABELS.items() %}<option value="{{ s }}" {{ 'selected' if land.status == s }}>{{ label }}</option>{% endfor %}</select>
+    <button class="btn secondary">Set status</button>
+  </form>
+  {% if user.is_admin %}
+  <form method="post" action="/lands/{{ land.id }}/delete" style="margin-top:14px" onsubmit="return confirm('Delete this land with all its screenings and studies?');">{{ csrf_field() }}
+    <button class="btn danger small">Delete land</button></form>
+  {% endif %}
+</div>
+{% endif %}
+<p class="muted small">Added {{ land.created_at.strftime('%d %b %Y') }}{% if land.created_by %} by {{ land.created_by.name }}{% endif %} · updated {{ land.updated_at.strftime('%d %b %Y %H:%M') }}</p>
+{% endblock %}

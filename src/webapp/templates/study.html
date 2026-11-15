@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, money_cell with context %}
+{% block title %}{{ rec.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a>{% if rec.parent %} / <a href="/studies/{{ rec.parent.id }}">{{ rec.parent.name }}</a>{% endif %}</div>
+    <h1>{{ rec.name }}</h1>
+    <div class="muted">{% if rec.parent %}Scenario of {{ rec.parent.name }} · {% endif %}{% if rec.run_at %}run {{ rec.run_at.strftime('%d %b %Y %H:%M') }}{% endif %}{% if rec.description %} · {{ rec.description }}{% endif %}</div>
+  </div>
+  <div class="actions">
+    {% if user.can_edit %}<a class="btn" href="/studies/{{ rec.id }}/edit">Edit inputs</a>{% endif %}
+    {% if r %}
+    <a class="btn secondary" href="/studies/{{ rec.id }}/report.pdf">Investor report (PDF)</a>
+    <a class="btn secondary" href="/studies/{{ rec.id }}/report.pptx">Slides (PowerPoint)</a>
+    {% endif %}
+    <a class="btn secondary" href="/studies/{{ rec.id }}/study.json">Inputs (JSON)</a>
+  </div>
+</div>
+
+{% if rec.error %}
+<div class="errors"><strong>The study did not run.</strong> Fix the inputs and save again.<ul>{% for line in rec.error.split('\n') %}<li>{{ line }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+{% if r %}
+{% set k = r.kpis %}
+<div class="tiles">
+  {% for key in ['revenue', 'profit_pre_tax', 'margin_on_revenue', 'npv_pre_tax', 'irr_pre_tax', 'irr_after_tax', 'peak_funding_need', 'payback_month', 'equity_irr', 'equity_multiple'] %}
+  <div class="tile"><div class="label">{{ KPI_LABELS[key] }}{% if key == 'npv_pre_tax' %} at {{ rec.data.finance.discount_rate_annual|pct(0) }}{% endif %}</div>
+    <div class="value {{ 'neg' if k[key] is not none and k[key] is number and k[key] < 0 }}">{{ kpi(key, k[key]) }}</div></div>
+  {% endfor %}
+</div>
+{% if r.irr_status.pre_tax != 'ok' %}<div class="note">IRR before tax: {{ r.irr_status.pre_tax }}. See the model notes below.</div>{% endif %}
+
+<div class="panel">
+  <h2>Net cash flow by year</h2>
+  {{ chart|safe }}
+  <div class="legend"><span><i style="background:var(--accent)"></i>net inflow</span><span><i style="background:var(--no)"></i>net outflow</span><span><i style="background:#e0a100"></i>running total</span></div>
+</div>
+
+<div class="panel">
+  <h2>Development programme</h2>
+  <p class="muted small">Land {{ r.land_area_m2|num }} m2 · allowed built area {{ r.allowed_built_area_m2|num }} m2 · built in this study {{ r.built_area_m2|num }} m2 · {{ r.months }} months</p>
+  <div class="table-scroll"><table>
+    <tr><th>Product</th><th>Category</th><th>Mode</th><th class="num">Built m2</th><th class="num">Sellable m2</th><th class="num">Units</th><th class="num">Avg price / m2</th><th class="num">Contract value</th><th class="num">Construction</th><th class="num">Delivery</th></tr>
+    {% for p in r.products %}
+    <tr><td>{{ p.name }}</td><td>{{ p.category }}</td><td>{{ p.mode }}</td><td class="num">{{ p.built_area_m2|num }}</td><td class="num">{{ p.sellable_area_m2|num }}</td>
+      <td class="num">{{ p.units|num if p.mode == 'sell' else '' }}</td><td class="num">{{ p.average_price_per_m2|num if p.mode == 'sell' else '' }}</td>
+      <td class="num">{{ p.contracted_value|money if p.mode == 'sell' else '' }}</td><td class="num">{{ p.hard_cost|money }}</td><td class="num">month {{ p.delivery_month }}</td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+<div class="panel">
+  <h2>Cash flow by year ({{ currency }})</h2>
+  <div class="table-scroll"><table>
+    {% set n = r.yearly.cash_flow_pre_tax|length %}
+    <tr><th>Line</th><th class="num">Total</th>{% for i in range(n) %}<th class="num">Y{{ i + 1 }}</th>{% endfor %}</tr>
+    {% for key, vals in r.yearly.items() %}
+      {% if vals|select('ne', 0.0)|list %}
+      <tr class="{{ 'total' if key.startswith('cash_flow') else '' }}"><td>{{ LINE_LABELS.get(key, key) }}</td>{{ money_cell(vals|sum) }}{% for v in vals %}{{ money_cell(v) }}{% endfor %}</tr>
+      {% endif %}
+    {% endfor %}
+  </table></div>
+</div>
+
+<div class="panel" id="analysis">
+  <h2>Scenarios and analyses</h2>
+  <p class="muted small">Each analysis re-runs the full engine. Results are kept with the study and go into the reports.</p>
+  {% if user.can_edit %}
+  <div class="actions" style="margin-bottom:12px">
+    <form method="post" action="/studies/{{ rec.id }}/analysis">{{ csrf_field() }}<input type="hidden" name="kind" value="scenarios"><button class="btn secondary">Run standard scenarios</button></form>
+    <form method="post" action="/studies/{{ rec.id }}/analysis">{{ csrf_field() }}<input type="hidden" name="kind" value="residual"><button class="btn secondary">Residual land value</button></form>
+    <form method="post" action="/studies/{{ rec.id }}/analysis" class="actions">{{ csrf_field() }}<input type="hidden" name="kind" value="risk"><input type="number" name="runs" value="200" min="20" max="1000" style="width:90px"><button class="btn secondary">Risk ranges</button></form>
+    <form method="post" action="/studies/{{ rec.id }}/analysis" class="actions">{{ csrf_field() }}<input type="hidden" name="kind" value="sensitivity">
+      <select name="shock" style="width:160px">{% for s in ['price', 'cost', 'sales_pace', 'delay', 'cost_inflation', 'cancellation_rate', 'land_price'] %}<option>{{ s }}</option>{% endfor %}</select>
+      <input name="values" placeholder="values, e.g. 0.8,0.9,1,1.1" style="width:200px"><button class="btn secondary">Sensitivity</button></form>
+  </div>
+  {% endif %}
+  {% if analysis.scenarios %}
+  <h3>Standard scenarios</h3>
+  <div class="table-scroll"><table>
+    <tr><th>Scenario</th><th class="num">Revenue</th><th class="num">Profit before tax</th><th class="num">Margin</th><th class="num">NPV</th><th class="num">IRR</th><th class="num">IRR after tax</th><th class="num">Peak funding</th></tr>
+    {% for row in analysis.scenarios %}
+    <tr><td>{{ row.label }}</td>{% if row.error %}<td colspan="7" class="neg">{{ row.error }}</td>{% else %}
+      {{ money_cell(row.revenue) }}{{ money_cell(row.profit_pre_tax) }}<td class="num">{{ row.margin_on_revenue|pct }}</td>{{ money_cell(row.npv_pre_tax) }}
+      <td class="num">{{ row.irr_pre_tax|pct }}</td><td class="num">{{ row.irr_after_tax|pct }}</td>{{ money_cell(row.peak_funding_need) }}{% endif %}</tr>
+    {% endfor %}
+  </table></div>
+  {% endif %}
+  {% if analysis.residual %}
+  {% set rl = analysis.residual %}
+  <h3>Residual land value</h3>
+  <p>{% if rl.feasible %}At a {{ rl.target_rate|pct(0) }} target the land can cost up to <strong>{{ rl.price_per_feddan|money }} {{ currency }} per feddan</strong> ({{ rl.price_per_m2|num }} per m2, {{ rl.total|money }} for the part bought), with the rest of the deal as entered.{% else %}Even free land would miss the {{ rl.target_rate|pct(0) }} target on these assumptions.{% endif %}</p>
+  {% endif %}
+  {% if analysis.risk %}
+  {% set rk = analysis.risk %}
+  <h3>Risk ranges ({{ rk.runs }} runs)</h3>
+  <p class="muted small">Prices, sales pace, cost inflation and delay vary together in each run.</p>
+  <table style="max-width:640px">
+    <tr><th></th><th class="num">Low (P10)</th><th class="num">Middle (P50)</th><th class="num">High (P90)</th></tr>
+    <tr><td>NPV</td>{{ money_cell(rk.npv.p10) }}{{ money_cell(rk.npv.p50) }}{{ money_cell(rk.npv.p90) }}</tr>
+    {% if rk.irr %}<tr><td>IRR</td><td class="num">{{ rk.irr.p10|pct }}</td><td class="num">{{ rk.irr.p50|pct }}</td><td class="num">{{ rk.irr.p90|pct }}</td></tr>{% endif %}
+  </table>
+  <p>Chance the target return is met: <strong>{{ rk.probability_target_met|pct(0) }}</strong></p>
+  {% endif %}
+  {% if analysis.sensitivity %}
+  <h3>Sensitivity: {{ analysis.sensitivity.shock|replace('_', ' ') }}</h3>
+  <table style="max-width:780px">
+    <tr><th class="num">Value</th><th class="num">NPV</th><th class="num">IRR</th><th class="num">Profit before tax</th><th class="num">Peak funding</th></tr>
+    {% for row in analysis.sensitivity.rows %}
+    <tr><td class="num">{{ row.value }}</td>{{ money_cell(row.npv_pre_tax) }}<td class="num">{{ row.irr_pre_tax|pct }}</td>{{ money_cell(row.profit_pre_tax) }}{{ money_cell(row.peak_funding_need) }}</tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+{% if r.warnings or r.checks %}
+<div class="panel">
+  <h2>Model checks and notes</h2>
+  {% for name, ok in r.checks.items() %}<span class="badge {{ 'go' if ok else 'no_go' }}" style="margin:0 6px 6px 0">{{ name|replace('_', ' ') }}: {{ 'pass' if ok else 'fail' }}</span>{% endfor %}
+  {% for w in r.warnings %}<p>{{ w }}</p>{% endfor %}
+</div>
+{% endif %}
+{% endif %}
+
+<div class="panel">
+  <h2>Scenarios of this study</h2>
+  {% if children %}
+  <ul>{% for c in children %}<li><a href="/studies/{{ c.id }}">{{ c.name }}</a>{% if c.result %} · NPV {{ c.result.kpis.npv_pre_tax|money }} · IRR {{ c.result.kpis.irr_pre_tax|pct }}{% endif %}</li>{% endfor %}</ul>
+  {% else %}<p class="muted">None yet. A scenario is a full copy you can change freely, for example another product mix or deal structure.</p>{% endif %}
+  {% if user.can_edit %}
+  <form class="actions" method="post" action="/studies/{{ rec.id }}/scenario">{{ csrf_field() }}
+    <input name="name" placeholder="Scenario name, e.g. Partnership 60/40" required style="max-width:320px"><button class="btn secondary">Create scenario</button></form>
+  {% endif %}
+</div>
+
+{% if user.can_edit %}
+<form method="post" action="/studies/{{ rec.id }}/delete" class="no-print" onsubmit="return confirm('Delete this study?');">{{ csrf_field() }}<button class="btn danger small">Delete study</button></form>
+{% endif %}
+{% endblock %}

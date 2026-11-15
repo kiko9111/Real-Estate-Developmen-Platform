@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field with context %}
+{% block title %}Market{% endblock %}
+{% block head %}{% if running %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Market scan{% if location %}: {{ location }}{% endif %}</h1>
+  <div class="muted">Competitor prices and payment plans by location. Web results come with their source and stay unverified until someone on the team checks them.</div>
+</div>
+{% if location %}<div class="actions"><a class="btn secondary" href="/market/export.csv?location={{ location|urlencode }}">Download CSV</a></div>{% endif %}
+</div>
+
+<div class="grid two">
+  <div class="panel">
+    <h2>Open a location</h2>
+    <form method="get" action="/market" class="actions">
+      <input name="location" list="locs" value="{{ location }}" placeholder="e.g. a bay, district or city" style="max-width:320px" required>
+      <datalist id="locs">{% for loc, n in locations %}<option value="{{ loc }}">{% endfor %}</datalist>
+      <button class="btn secondary">Open</button>
+    </form>
+    {% if locations %}<p class="small muted" style="margin-top:10px">Locations with data: {% for loc, n in locations %}<a href="/market?location={{ loc|urlencode }}">{{ loc }}</a> ({{ n }}){{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}
+  </div>
+  {% if user.can_edit %}
+  <div class="panel">
+    <h2>Run a web scan</h2>
+    {% if settings.market_scan_enabled %}
+    <form method="post" action="/market/scan">{{ csrf_field() }}
+      <div class="form-row">
+        <div class="field"><label>Location</label><input name="location" value="{{ location }}" required></div>
+        <div class="field"><label>Focus (optional)</label><input name="product_focus" placeholder="e.g. chalets and villas, delivery 2028+"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>For land (optional)</label><select name="land_id"><option value="">none</option>{% for l in lands %}<option value="{{ l.id }}" {{ 'selected' if land_id == l.id|string }}>{{ l.name }}</option>{% endfor %}</select></div>
+      </div>
+      <button class="btn" {{ 'disabled' if running }}>{{ 'Scan running…' if running else 'Search the web' }}</button>
+    </form>
+    {% else %}
+    <p class="muted">The web scan is off on this server. An admin turns it on by setting <code>ANTHROPIC_API_KEY</code>. Comparables can still be added by hand below.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if location %}
+{% if stats and stats.rows %}
+<div class="panel">
+  <div class="page-head" style="margin-bottom:8px"><h2>Summary ({{ stats.rows }} projects)</h2>
+    <div class="small">{% if verified %}<a href="/market?location={{ location|urlencode }}">Include unverified</a>{% else %}<a href="/market?location={{ location|urlencode }}&verified=1">Verified only</a>{% endif %}</div></div>
+  <table>
+    <tr><th>Product</th><th class="num">Projects</th><th class="num">Median price / m2</th><th class="num">P25 – P75</th><th class="num">Min – max</th><th>Spread</th><th class="num">Median down payment</th><th class="num">Median years</th></tr>
+    {% for t, s in stats.by_type.items() %}
+    {% set p = s.price_per_m2 %}
+    <tr><td>{{ t }}</td><td class="num">{{ s.count }}</td>
+      <td class="num"><strong>{{ p.median|num if p else 'n/a' }}</strong></td>
+      <td class="num">{{ (p.p25|num ~ ' – ' ~ p.p75|num) if p else '' }}</td>
+      <td class="num">{{ (p.min|num ~ ' – ' ~ p.max|num) if p else '' }}</td>
+      <td>{{ ranges.get(t, '')|safe }}</td>
+      <td class="num">{{ s.down_payment_pct.median|pct(0) if s.down_payment_pct else 'n/a' }}</td>
+      <td class="num">{{ s.instalment_years.median if s.instalment_years else 'n/a' }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+{% for sc in scans[:5] %}
+<div class="panel">
+  <h2 style="margin-bottom:4px">Scan {{ sc.created_at.strftime('%d %b %Y %H:%M') }} {% if sc.status == 'running' %}<span class="badge screening">running</span>{% elif sc.status == 'failed' %}<span class="badge no_go">failed</span>{% else %}<span class="badge go">{{ sc.comparables|length }} found</span>{% endif %}</h2>
+  <div class="muted small">{{ sc.product_focus or 'all products' }}{% if sc.created_by %} · {{ sc.created_by.name }}{% endif %}</div>
+  {% if sc.summary %}<p style="white-space:pre-wrap">{{ sc.summary }}</p>{% endif %}
+  {% if sc.error %}<p class="neg">{{ sc.error }}</p>{% endif %}
+</div>
+{% endfor %}
+
+<div class="panel" style="padding:0">
+  <div style="padding:16px 18px 0"><h2>Comparables</h2></div>
+  {% if comps %}
+  <div class="table-scroll"><table>
+    <tr><th>Project</th><th>Developer</th><th>Product</th><th class="num">Price / m2</th><th class="num">From</th><th class="num">Size</th><th class="num">Down</th><th class="num">Years</th><th>Delivery</th><th>Source</th><th>Status</th>{% if user.can_edit %}<th></th>{% endif %}</tr>
+    {% for c in comps %}
+    <tr style="{{ 'opacity:.5' if c.excluded }}">
+      <td><strong>{{ c.project }}</strong>{% if c.notes %}<div class="muted small">{{ c.notes }}</div>{% endif %}</td>
+      <td>{{ c.developer }}</td><td>{{ c.product_type }}</td>
+      <td class="num">{{ c.price_per_m2|num if c.price_per_m2 else '' }}</td>
+      <td class="num">{{ c.unit_price_from|money if c.unit_price_from else '' }}</td>
+      <td class="num">{{ c.unit_size_m2|num if c.unit_size_m2 else '' }}</td>
+      <td class="num">{{ c.down_payment_pct|pct(0) if c.down_payment_pct is not none else '' }}</td>
+      <td class="num">{{ c.instalment_years if c.instalment_years is not none else '' }}</td>
+      <td>{{ c.delivery }}</td>
+      <td>{% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer nofollow">source</a>{% endif %} <span class="muted small">{{ c.source_date }}</span></td>
+      <td>{% if c.excluded %}<span class="badge">excluded</span>{% elif c.verified %}<span class="badge go">verified</span>{% else %}<span class="badge borderline">unverified</span>{% endif %}</td>
+      {% if user.can_edit %}
+      <td style="white-space:nowrap">
+        {% for action, label in [('verify', 'Unverify' if c.verified else 'Verify'), ('exclude', 'Include' if c.excluded else 'Exclude'), ('delete', 'Delete')] %}
+        <form method="post" action="/comparables/{{ c.id }}" style="display:inline">{{ csrf_field() }}<input type="hidden" name="action" value="{{ action }}"><button class="btn small secondary">{{ label }}</button></form>
+        {% endfor %}
+      </td>{% endif %}
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="muted" style="padding:0 18px 18px">No comparables for {{ location }} yet.</p>{% endif %}
+</div>
+
+{% if user.can_edit %}
+<div class="grid two">
+  <div class="panel">
+    <h2>Add a comparable</h2>
+    <form method="post" action="/market/comparables">{{ csrf_field() }}<input type="hidden" name="location" value="{{ location }}">
+      <div class="form-row"><div class="field"><label>Project *</label><input name="project" required></div><div class="field"><label>Developer</label><input name="developer"></div></div>
+      <div class="form-row"><div class="field"><label>Product</label><input name="product_type" placeholder="chalet, villa, apartment…"></div><div class="field"><label>Price per m2</label><input name="price_per_m2" type="number" step="any"></div></div>
+      <div class="form-row"><div class="field"><label>Unit price from</label><input name="unit_price_from" type="number" step="any"></div><div class="field"><label>Unit size m2</label><input name="unit_size_m2" type="number" step="any"></div></div>
+      <div class="form-row"><div class="field"><label>Down payment (% or fraction)</label><input name="down_payment_pct" type="number" step="any"></div><div class="field"><label>Instalment years</label><input name="instalment_years" type="number" step="any"></div></div>
+      <div class="form-row"><div class="field"><label>Delivery</label><input name="delivery"></div><div class="field"><label>Finishing</label><input name="finishing"></div></div>
+      <div class="form-row"><div class="field"><label>Source link</label><input name="source_url" type="url"></div><div class="field"><label>Source date</label><input name="source_date"></div></div>
+      <div class="field" style="margin-bottom:12px"><label>Notes</label><input name="notes"></div>
+      <button class="btn">Add</button>
+    </form>
+  </div>
+  <div class="panel">
+    <h2>Paste a table</h2>
+    <p class="muted small">Paste from a spreadsheet with a header row. Columns it reads: project, developer, product_type, price_per_m2, unit_price_from, unit_size_m2, down_payment_pct, instalment_years, delivery, finishing, source_url, source_date, notes.</p>
+    <form method="post" action="/market/import">{{ csrf_field() }}<input type="hidden" name="location" value="{{ location }}">
+      <textarea name="csv_text" rows="10" required placeholder="project,developer,product_type,price_per_m2,down_payment_pct,instalment_years"></textarea>
+      <button class="btn" style="margin-top:10px">Import</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

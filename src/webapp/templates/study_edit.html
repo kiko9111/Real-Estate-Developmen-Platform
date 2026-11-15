@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}Edit · {{ rec.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a> / <a href="/studies/{{ rec.id }}">{{ rec.name }}</a></div>
+  <h1>Study inputs</h1>
+  <div class="muted">Every input of the feasibility engine. Months count from the land deal (month 1). Prices and costs are in today's money; rates are yearly fractions (0.12 = 12%).</div>
+</div></div>
+{{ errors_box(errors) }}
+<form id="study-form" method="post" action="/studies/{{ rec.id }}/edit">
+  {{ csrf_field() }}
+  <div class="panel">
+    <div class="form-row">
+      <div class="field"><label>Study name</label><input name="name" value="{{ rec.name }}" required></div>
+      <div class="field"><label>Description</label><input name="description" value="{{ rec.description }}"></div>
+    </div>
+  </div>
+  <div class="panel">{% include "schema_editor.html" %}</div>
+  <div class="sticky-save"><button class="btn">Save and run</button><a href="/studies/{{ rec.id }}">Cancel</a>
+    <span class="muted small">The study is checked before it is saved; nothing is stored if an input is invalid.</span></div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='schema-form.js') }}"></script>
+<script>SchemaForm.attach({form:"study-form", visual:"sf-visual", raw:"sf-raw", hidden:"sf-data", schema:"sf-schema", value:"sf-value", errors:"sf-errors"});</script>
+{% endblock %}
