@@ -1,0 +1,26 @@
+# One-click deploy on Render: https://render.com/deploy?repo=https://github.com/kiko9111/Real-Estate-Developmen-Platform
+# Render asks for the three values marked sync: false when you deploy. Never put them in this file.
+services:
+  - type: web
+    name: development-platform
+    runtime: docker
+    plan: starter            # always on; the free plan sleeps and has no disk
+    region: frankfurt        # closest Render region to Cairo
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1              # the database lives here and survives deploys
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        value: sqlite:////data/platform.db
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
