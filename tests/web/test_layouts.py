@@ -138,3 +138,64 @@ def test_team_edits_a_plan_and_rerun_keeps_it(analyst, viewer, app):
     kept = [o for o in rec.options if o["strategy"] == f"{name} (edited)"]
     assert len(kept) == 1 and kept[0]["edits"] == {str(blk["id"]): {"use": "park"}} and "rank" in kept[0]
     db.close()
+
+
+def test_architects_master_plan_import(analyst, viewer, app):
+    from tests.test_masterplan import drawing  # noqa: E402
+    lid = make_land(analyst)
+    rid = _layout(analyst, lid)
+    assert analyst.get(f"/layouts/{rid}/masterplan").status_code == 200
+    r = analyst.post(f"/layouts/{rid}/masterplan", {"name": "Scheme A"}, files={"file": ("plan.dwg", b"AC1027", "x")})
+    assert r.status_code == 400 and "DXF" in r.text
+    assert viewer.post(f"/layouts/{rid}/masterplan", {"name": "x"},
+                       files={"file": ("plan.dxf", drawing(), "application/dxf")}).status_code == 403
+    r = analyst.post(f"/layouts/{rid}/masterplan", {"name": "Scheme A"},
+                     files={"file": ("plan.dxf", drawing(), "application/dxf")})
+    assert r.status_code == 303, r.text
+    mid = int(r.headers["location"].rsplit("/", 1)[1])
+    page = analyst.get(f"/masterplans/{mid}").text
+    assert "SITE-BOUNDARY" in page and "Building footprints" in page
+    names = sorted(["BEACH", "BLDG G+2", "CHALET", "GREEN-PARK", "ROADS", "SERVICES", "SITE-BOUNDARY", "TEXT", "VILLA"])
+    form = {}
+    from webapp.models import MasterPlanImport
+    db = app.state.Session()
+    mp = db.get(MasterPlanImport, mid)
+    layer_names = sorted(mp.source["layers"])
+    assert set(layer_names) <= set(names)
+    for i, n in enumerate(layer_names):
+        form[f"use_{i}"] = mp.mapping[n]["use"]
+        form[f"floors_{i}"] = str(mp.mapping[n]["floors"] or "")
+    db.close()
+    # a bad mapping is shown again with the reason
+    bad = dict(form, **{f"use_{layer_names.index('SITE-BOUNDARY')}": "ignore"}, action="import")
+    r = analyst.post(f"/masterplans/{mid}", bad)
+    assert r.status_code == 400 and "boundary" in r.text
+    r = analyst.post(f"/masterplans/{mid}", dict(form, frontage_edge="0", action="import"))
+    assert r.status_code == 303, r.text
+    j = int(r.headers["location"].split("option=")[1])
+    page = analyst.get(r.headers["location"]).text
+    assert "Architect&#39;s plan: Scheme A" in page or "Architect's plan: Scheme A" in page
+    from webapp.models import LayoutRecord
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    o = rec.options[j]
+    assert o["imported"] and o["masterplan_id"] == mid and "feasibility" in o and o["rank"] == 1
+    db.close()
+    # the generated options join it on a run, and it stays
+    assert analyst.post(f"/layouts/{rid}/run").status_code == 303
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    imp = [o for o in rec.options if o.get("masterplan_id") == mid]
+    assert len(imp) == 1 and "rank" in imp[0] and len(rec.options) >= 5
+    i = rec.options.index(imp[0])
+    db.close()
+    # an imported plan is not edited block by block
+    r = analyst.post(f"/layouts/{rid}/options/{i}/edit", {"edits": json.dumps({"0": {"use": "park"}})})
+    assert r.status_code == 303 and "measured as drawn" in analyst.get(r.headers["location"]).text
+    # deleting it removes its option
+    assert analyst.post(f"/masterplans/{mid}/delete").status_code == 303
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    assert not any(o.get("masterplan_id") == mid for o in rec.options)
+    assert sum(1 for o in rec.options if o.get("best")) == 1
+    db.close()

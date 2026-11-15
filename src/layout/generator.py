@@ -660,6 +660,19 @@ def compliance(plan: Plan, by_t: dict, k: dict) -> list[dict]:
     sb = [(n, v) for n, v in (("frontage", _first(L.setback_sea_m, L.setback_front_m)),
                                ("side and rear", max([x for x in (L.setback_side_m, L.setback_rear_m) if x is not None], default=None)),
                                ("main road", L.setback_main_road_m)) if v]
+    if getattr(plan, "measured", False):
+        # a drawn plan: measure what the architect drew
+        from .masterplan import measured_setbacks
+        m = measured_setbacks(plan)
+        for n, v in sb:
+            if n in m and m[n] is not None:
+                row(f"Setback from {n}", f"at least {v:g} m", m[n], m[n] >= v - 0.05, "m")
+            else:
+                row(f"Setback from {n}", f"at least {v:g} m (not measured)", None, True, "m")
+        if L.between_buildings_m and m.get("between") is not None:
+            row("Distance between buildings", f"at least {L.between_buildings_m:g} m", m["between"],
+                m["between"] >= L.between_buildings_m - 0.05, "m")
+        return out
     for n, v in sb:
         row(f"Setback from {n}", f"at least {v:g} m", v, True, "m")
     if L.between_buildings_m:

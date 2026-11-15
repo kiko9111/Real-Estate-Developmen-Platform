@@ -13,11 +13,13 @@
     <a class="btn secondary" href="/layouts/{{ rec.id }}/boundary">Boundary</a>
     <a class="btn secondary" href="/layouts/{{ rec.id }}/brief">Design brief</a>
     <a class="btn secondary" href="/lands/{{ land.id }}/conditions">Conditions</a>
+    <a class="btn secondary" href="/layouts/{{ rec.id }}/masterplan">Import master plan</a>
     {% if user.can_edit %}<form method="post" action="/layouts/{{ rec.id }}/run">{{ csrf_field() }}<button class="btn" {{ 'disabled' if not preview }}>{{ 'Run again' if rec.options else 'Run layout' }}</button></form>{% endif %}
   </div>
 </div>
 {% if stale %}<div class="note">The land's conditions have changed since this layout last ran. Run it again to check the options against them.</div>{% endif %}
 {% if rec.error %}<div class="errors">{{ rec.error }}</div>{% endif %}
+{% if rec.masterplans %}<div class="note">Architect's plans: {% for mp in rec.masterplans %}<a href="/masterplans/{{ mp.id }}">{{ mp.name }}</a>{% if not mp.ready %} (layers not checked yet){% endif %}{{ ', ' if not loop.last }}{% endfor %}</div>{% endif %}
 {% if not opts %}
 <div class="panel"><p class="muted">{% if not preview %}Set the plot boundary first, then run the layout.{% else %}Run the layout to generate options. Fill in the <a href="/lands/{{ land.id }}/conditions">conditions</a> first: coverage, floor-area ratio, floors or height, density, open space, services and setbacks all shape the options.{% endif %}</p></div>
 {% else %}
@@ -51,7 +53,8 @@
     <div><h2 style="margin-bottom:2px">{{ o.strategy }}</h2><div class="muted small">{{ o.description }}</div></div>
     <div class="actions">
       <div class="tabs" style="margin:0"><button type="button" class="active" data-view="plan">Plan</button><button type="button" data-view="3d">3D massing</button></div>
-      {% if user.can_edit %}<button type="button" class="btn secondary" id="edit-toggle">Edit the plan</button>{% endif %}
+      {% if user.can_edit and not o.imported %}<button type="button" class="btn secondary" id="edit-toggle">Edit the plan</button>{% endif %}
+      {% if o.masterplan_id %}<a class="btn secondary" href="/masterplans/{{ o.masterplan_id }}">Layers</a>{% endif %}
       {% if user.can_edit and o.study %}<form method="post" action="/layouts/{{ rec.id }}/options/{{ sel }}/study">{{ csrf_field() }}<button class="btn">Make it a full study</button></form>{% endif %}
     </div>
   </div>
@@ -63,7 +66,7 @@
     <div class="muted small" id="view-hint">Frontage at the bottom. Drag in the 3D view to turn it, scroll to zoom.</div>
   </div>
   <script type="application/json" id="geo">{{ o.geometry|tojson }}</script>
-  {% if user.can_edit %}
+  {% if user.can_edit and not o.imported %}
   <div class="editor" id="editor" hidden>
     <h3>Edit the plan</h3>
     <p class="muted small">Click a block on the plan, choose what it holds and, if you like, a floor cap, then add the change. When you apply, the option is laid out again with your changes{% if not o.edits %} and saved as "{{ o.strategy }} (edited)", adding to any earlier edits{% endif %}, checked against the conditions and run through the feasibility engine; the original stays for comparison. Height limits still apply, and a cap on built area or density still thins every block evenly. Other blocks may change to keep the required mix.</p>

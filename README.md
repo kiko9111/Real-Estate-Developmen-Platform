@@ -48,6 +48,13 @@ This repository holds three parts:
   laid out again with those blocks locked, checked against the conditions, run through
   the engine and ranked as "<strategy> (edited)" beside the original. Height limits still
   win over an edit, and edits are kept when the layout is run again.
+  An architect's master plan can be imported as DXF: closed polylines on layers (boundary,
+  roads, parks, water, beach, services, one layer per product, and optional building
+  footprints with floors in the layer name, such as `BLDG G+2`). The app guesses what each
+  layer is from its name; the team checks it and picks the frontage edge. The plan is
+  measured as drawn (nothing moved or thinned), setbacks and distances between buildings
+  are measured, plots without footprints are filled from the building library, and the
+  plan is ranked with the generated options.
 
 ### Run it
 

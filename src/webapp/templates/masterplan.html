@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}{{ mp.name }} · {{ rec.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a> / <a href="/layouts/{{ rec.id }}">{{ rec.name }}</a></div>
+  <h1>Architect's plan: {{ mp.name }}</h1>
+  <div class="muted">{{ mp.filename }} · {{ layers|length }} layers{% if mp.ready %} · imported{% endif %}</div>
+</div>
+<div class="actions"><a class="btn secondary" href="/layouts/{{ rec.id }}">Back to the layout</a></div>
+</div>
+{{ errors_box(errors) }}
+<form method="post" action="/masterplans/{{ mp.id }}">{{ csrf_field() }}
+<div class="grid two">
+<div class="panel">
+  <h2>What each layer is</h2>
+  <p class="muted small">A first guess from the layer names. Floors on a footprint layer are the buildings' floors; on a plot layer they cap the floors of buildings placed in plots without footprints.</p>
+  <div class="table-scroll"><table>
+    <tr><th>Layer</th><th class="num">Outlines</th><th class="num">Area m2</th><th>Is</th><th>Floors</th></tr>
+    {% for l in layers %}{% set m = mp.mapping.get(l.name, {}) %}
+    <tr>
+      <td>{{ l.name }}</td><td class="num">{{ l.count|num }}</td><td class="num">{{ l.area_m2|num }}</td>
+      <td><select name="use_{{ loop.index0 }}" data-layer="{{ l.name }}" class="mp-use" {{ 'disabled' if not user.can_edit }}>
+        {% for u in uses %}<option value="{{ u }}" {{ 'selected' if m.use == u }}>{{ labels[u] }}</option>{% endfor %}
+      </select></td>
+      <td><input name="floors_{{ loop.index0 }}" type="number" min="1" step="1" value="{{ m.floors or '' }}" style="width:5em" {{ 'disabled' if not user.can_edit }}></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+</div>
+<div class="panel">
+  <h2>Drawing</h2>
+  <svg id="drawing" class="outline" style="height:460px"></svg>
+  <div class="legend" id="mp-legend"></div>
+  {% if ring %}
+  <label>Frontage edge (faces the sea, lake or main road; numbered on the drawing)
+    <select name="frontage_edge" {{ 'disabled' if not user.can_edit }}>{% for p in ring %}<option value="{{ loop.index0 }}" {{ 'selected' if loop.index0 == mp.frontage_edge }}>Edge {{ loop.index }}</option>{% endfor %}</select>
+  </label>
+  {% else %}<p class="neg small">Say which layer is the plot boundary, then save to number its edges.</p>{% endif %}
+</div>
+</div>
+{% if user.can_edit %}
+<div class="actions">
+  <button class="btn secondary" name="action" value="edge">Save without importing</button>
+  <button class="btn" name="action" value="import">Import, check and rank</button>
+</div>
+{% endif %}
+</form>
+{% if user.can_edit %}
+<form method="post" action="/masterplans/{{ mp.id }}/delete" onsubmit="return confirm('Delete this imported plan?');" style="margin-top:16px">{{ csrf_field() }}<button class="btn danger small">Delete imported plan</button></form>
+{% endif %}
+<script type="application/json" id="mp-data">{{ drawing|tojson }}</script>
+<script type="application/json" id="mp-ring">{{ ring|tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  const NS = "http://www.w3.org/2000/svg";
+  const data = JSON.parse(document.getElementById("mp-data").textContent);
+  const ring = JSON.parse(document.getElementById("mp-ring").textContent);
+  const svg = document.getElementById("drawing");
+  const COL = {boundary: "none", road: "#c3c7cc", park: "#9fcf8c", water: "#6fc0e8", beach: "#f0e2b6",
+               services: "#ddd0ee", buildings: "#c45a3b", ignore: null};
+  const NAMES = {boundary: "Boundary", road: "Roads", park: "Parks", water: "Water", beach: "Beach",
+                 services: "Services", buildings: "Footprints"};
+  const ORDER = ["beach", "water", "park", "road", "services", "plot", "buildings", "boundary"];
+  let xs = [], ys = [];
+  for (const rs of Object.values(data.layers)) for (const r of rs) for (const p of r) { xs.push(p[0]); ys.push(p[1]); }
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const span = Math.max(x1 - x0, y1 - y0) || 1, pad = span * 0.06;
+  svg.setAttribute("viewBox", `${x0 - pad} ${-(y1 + pad)} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}`);
+  const el = (t, a) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const pts = (r) => r.map((p) => p[0].toFixed(2) + "," + (-p[1]).toFixed(2)).join(" ");
+  function draw() {
+    const use = {};
+    document.querySelectorAll(".mp-use").forEach((s) => { use[s.dataset.layer] = s.value; });
+    svg.innerHTML = "";
+    const kind = (u) => (u in COL ? u : "plot");
+    const names = Object.keys(data.layers).sort((a, b) => ORDER.indexOf(kind(use[a])) - ORDER.indexOf(kind(use[b])));
+    const shown = new Set();
+    for (const n of names) {
+      const u = use[n] || "ignore";
+      if (u === "ignore") continue;
+      const fill = u in COL ? COL[u] : "#e9c39b";
+      shown.add(u in COL ? NAMES[u] : "Plots by product");
+      for (const r of data.layers[n]) svg.appendChild(el("polygon", {points: pts(r), fill: fill,
+        stroke: u === "boundary" ? "#333" : "rgba(0,0,0,.35)", "stroke-width": u === "boundary" ? span / 300 : span / 1500}));
+    }
+    if (ring) {
+      const fe = +(document.querySelector("[name=frontage_edge]") || {value: 0}).value;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i], b = ring[(i + 1) % ring.length];
+        if (i === fe) svg.appendChild(el("line", {x1: a[0], y1: -a[1], x2: b[0], y2: -b[1], stroke: "#1f78b4", "stroke-width": span / 120}));
+        const t = el("text", {x: (a[0] + b[0]) / 2, y: -(a[1] + b[1]) / 2, "font-size": span / 22, "text-anchor": "middle",
+          fill: i === fe ? "#1f78b4" : "#333", "font-weight": 600, "paint-order": "stroke", stroke: "#fff", "stroke-width": span / 200});
+        t.textContent = String(i + 1);
+        svg.appendChild(t);
+      }
+    }
+    document.getElementById("mp-legend").innerHTML = [...shown].map((n) => {
+      const c = Object.keys(NAMES).find((k) => NAMES[k] === n);
+      return `<span><i style="background:${c ? (COL[c] === "none" ? "#fff;border:1px solid #333" : COL[c]) : "#e9c39b"}"></i>${n}</span>`;
+    }).join("");
+  }
+  document.querySelectorAll(".mp-use, [name=frontage_edge]").forEach((s) => s.addEventListener("change", draw));
+  draw();
+})();
+</script>
+{% endblock %}

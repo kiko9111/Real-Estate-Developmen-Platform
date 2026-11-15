@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}Import master plan · {{ rec.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a> / <a href="/layouts/{{ rec.id }}">{{ rec.name }}</a></div>
+  <h1>Import an architect's master plan</h1>
+  <div class="muted">Upload the master plan as DXF. It is measured as drawn, checked against the land's conditions, run through the feasibility engine and ranked with the generated options.</div>
+</div>
+<div class="actions"><a class="btn secondary" href="/layouts/{{ rec.id }}">Back to the layout</a></div>
+</div>
+{{ errors_box(errors) }}
+<div class="grid two">
+<div class="panel">
+  <h2>Upload</h2>
+  {% if user.can_edit %}
+  <form method="post" action="/layouts/{{ rec.id }}/masterplan" enctype="multipart/form-data">{{ csrf_field() }}
+    <label>Name <input name="name" placeholder="for example: Architect A, scheme 2"></label>
+    <label>DXF file (up to 25 MB) <input type="file" name="file" accept=".dxf" required></label>
+    <button class="btn">Read the drawing</button>
+  </form>
+  {% else %}<p class="muted">Only editors can import plans.</p>{% endif %}
+</div>
+<div class="panel">
+  <h2>How to prepare the drawing</h2>
+  <ul class="small">
+    <li>Draw every area as a <strong>closed polyline</strong> on its own layer: the plot boundary, roads, parks, water, beach, services plots, and one layer per product (villa plots, chalet blocks, hotel plot and so on). Circles are read too, and blocks (inserts) are exploded.</li>
+    <li>Building footprints are optional, on a layer of their own. Each one takes the product of the plot it stands in. Put the floors in the layer name (for example <code>BLDG G+2</code> or <code>BLDG 4F</code>) or set them on the next page.</li>
+    <li>Plots without footprints are filled with the building library's types, within the height limits, so a land-use plan alone still gets a built area.</li>
+    <li>Units in metres (the drawing's units setting is used when it is set). AutoCAD: <em>Save As, DXF</em>; DWG cannot be read.</li>
+    <li>On the next page you check what each layer is and which boundary edge faces the sea or main road.</li>
+  </ul>
+</div>
+</div>
+{% endblock %}

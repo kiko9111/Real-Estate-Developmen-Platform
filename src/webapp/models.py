@@ -201,3 +201,26 @@ class LayoutRecord(Base):
                                                          order_by="LayoutRecord.created_at.desc()"))
     base_study: Mapped[Optional[StudyRecord]] = relationship(foreign_keys=[base_study_id])
     created_by: Mapped[Optional[User]] = relationship()
+
+
+class MasterPlanImport(Base):
+    """An architect's master plan, read from DXF: closed outlines per layer, and what each layer is.
+
+    The outlines are kept (in metres, in the drawing's own coordinates) so the plan is measured again
+    each time the layout runs, against the conditions and base study of that moment.
+    """
+    __tablename__ = "masterplans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    layout_id: Mapped[int] = mapped_column(ForeignKey("layouts.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    filename: Mapped[str] = mapped_column(String(300), default="")
+    source: Mapped[dict] = mapped_column(JSON)            # {"layers": {name: [ring, ...]}, "units": ...}
+    mapping: Mapped[dict] = mapped_column(JSON)           # {layer: {"use": ..., "floors": ...}}
+    frontage_edge: Mapped[int] = mapped_column(Integer, default=0)
+    ready: Mapped[bool] = mapped_column(Boolean, default=False)   # the team has checked the layers
+    created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+    layout: Mapped[LayoutRecord] = relationship(backref=backref("masterplans", cascade="all, delete-orphan",
+                                                                   order_by="MasterPlanImport.created_at"))
