@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}Boundary · {{ rec.name }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', path='vendor/leaflet/leaflet.css') }}">{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a> / <a href="/layouts/{{ rec.id }}">{{ rec.name }}</a></div>
+  <h1>Plot boundary</h1>
+  <div class="muted">Draw the plot on the map, upload a KML/KMZ (Google Earth) or DXF (AutoCAD) file, type the corners, or give frontage and depth. Then pick the frontage edge: the sea, lake or main road the layout faces.</div>
+</div>
+<div class="actions"><a class="btn secondary" href="/layouts/{{ rec.id }}/brief">Design brief</a><a class="btn" href="/layouts/{{ rec.id }}">Back to the layout</a></div>
+</div>
+{{ errors_box(errors) }}
+
+<div class="grid two">
+<div class="panel">
+  <h2>Current boundary</h2>
+  {% if preview %}
+  <dl class="facts">
+    <dt>Area</dt><dd>{{ preview.area_m2|num }} m2 ({{ (preview.area_m2 / FEDDAN_M2)|num(2) }} feddan){% if (preview.area_m2 - land.area_m2)|abs > 0.02 * land.area_m2 %} <span class="neg">· the land record says {{ land.area_m2|num }} m2</span>{% endif %}</dd>
+    <dt>Frontage</dt><dd>edge {{ preview.frontage_edge + 1 }}, {{ preview.frontage_m|num }} m</dd>
+    <dt>Depth</dt><dd>{{ preview.depth_m|num }} m from the frontage</dd>
+    <dt>Source</dt><dd>{{ preview.source or 'entered' }}</dd>
+  </dl>
+  <svg id="outline" class="outline" viewBox="0 0 100 100"></svg>
+  {% if user.can_edit %}
+  <form method="post" action="/layouts/{{ rec.id }}/frontage" class="actions" style="margin-top:10px">{{ csrf_field() }}
+    <label>Frontage edge</label>
+    <select name="frontage_edge" style="max-width:220px">{% for e in preview.edges %}<option value="{{ loop.index0 }}" {{ 'selected' if loop.index0 == preview.frontage_edge }}>Edge {{ loop.index }} ({{ e|num }} m)</option>{% endfor %}</select>
+    <button class="btn secondary small">Set frontage</button>
+  </form>
+  {% endif %}
+  <script type="application/json" id="preview">{{ preview|tojson }}</script>
+  {% else %}<p class="muted">No boundary yet.</p>{% endif %}
+</div>
+
+{% if user.can_edit %}
+<div class="panel">
+  <h2>Quick rectangle</h2>
+  <form method="post" action="/layouts/{{ rec.id }}/boundary" class="form-row">{{ csrf_field() }}
+    <input type="hidden" name="mode" value="rectangle">
+    <div class="field"><label>Frontage (m)</label><input type="number" step="any" name="frontage_m" value="{{ land.frontage_m or '' }}"></div>
+    <div class="field"><label>Depth (m)</label><input type="number" step="any" name="depth_m" value="{{ (land.area_m2 / land.frontage_m)|round(1) if land.frontage_m else (land.depth_m or '') }}"></div>
+    <div class="field"><label>&nbsp;</label><button class="btn secondary">Use rectangle</button></div>
+  </form>
+  <p class="muted small">Depth defaults to the land area divided by the frontage, so the area matches the land record.</p>
+  <h2 style="margin-top:18px">Upload a file</h2>
+  <form method="post" action="/layouts/{{ rec.id }}/boundary" enctype="multipart/form-data" class="form-row">{{ csrf_field() }}
+    <input type="hidden" name="mode" value="file">
+    <div class="field"><label>KML, KMZ or DXF</label><input type="file" name="file" accept=".kml,.kmz,.dxf"></div>
+    <div class="field"><label>Frontage edge number</label><input type="number" name="frontage_edge" value="0" min="0"><div class="hint">0 = first edge; you can change it after upload.</div></div>
+    <div class="field"><label>&nbsp;</label><button class="btn secondary">Upload</button></div>
+  </form>
+  <p class="muted small">DXF: draw the plot as one closed polyline, in metres. DWG cannot be read; save as DXF first.</p>
+  <h2 style="margin-top:18px">Type the corners</h2>
+  <form method="post" action="/layouts/{{ rec.id }}/boundary">{{ csrf_field() }}
+    <div class="form-row">
+      <div class="field"><label>Units</label><select name="mode"><option value="points">x, y in metres</option><option value="lonlat">longitude, latitude</option></select></div>
+      <div class="field"><label>Frontage edge number</label><input type="number" name="frontage_edge" value="0" min="0"></div>
+    </div>
+    <textarea name="text" rows="5" placeholder="0, 0&#10;600, 0&#10;600, 1721&#10;0, 1721"></textarea>
+    <button class="btn secondary" style="margin-top:8px">Use these corners</button>
+  </form>
+</div>
+{% endif %}
+</div>
+
+{% if user.can_edit %}
+<div class="panel">
+  <h2>Draw on the map</h2>
+  <p class="muted small">Click each corner in order, starting with the two ends of the frontage. The satellite images load from Esri in your browser.</p>
+  <div id="map" class="map"></div>
+  <form method="post" action="/layouts/{{ rec.id }}/boundary" class="actions" style="margin-top:10px">{{ csrf_field() }}
+    <input type="hidden" name="mode" value="map"><input type="hidden" name="points_json" id="points_json">
+    <input type="hidden" name="frontage_edge" value="0">
+    <button type="button" class="btn secondary small" id="undo">Undo corner</button>
+    <button type="button" class="btn secondary small" id="clear">Clear</button>
+    <span class="muted small" id="drawn-area"></span>
+    <button class="btn" id="save-drawn" disabled>Save drawn boundary</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', path='massing.js') }}"></script>
+<script>
+(function () {
+  const pv = JSON.parse((document.getElementById("preview") || {textContent: "null"}).textContent);
+  if (pv) Massing.outline(document.getElementById("outline"), pv.points, pv.frontage_edge);
+  const mapEl = document.getElementById("map");
+  if (!mapEl || !window.L) return;
+  const start = {{ [land.latitude, land.longitude]|tojson if land.latitude is not none and land.longitude is not none else 'null' }};
+  const map = L.map(mapEl).setView(start || [31.05, 27.6], start ? 15 : 8);
+  const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    {maxZoom: 19, attribution: "Imagery &copy; Esri"}).addTo(map);
+  const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19, attribution: "&copy; OpenStreetMap"});
+  L.control.layers({"Satellite": sat, "Street map": osm}).addTo(map);
+  let pts = [];
+  const poly = L.polygon([], {color: "#ffcc00", weight: 2}).addTo(map);
+  const marks = L.layerGroup().addTo(map);
+  if (pv && pv.lonlat) {
+    const ll = pv.lonlat.map((p) => [p[1], p[0]]);
+    L.polygon(ll, {color: "#00e0c0", weight: 2, dashArray: "4 4"}).addTo(map);
+    map.fitBounds(ll);
+  }
+  function redraw() {
+    poly.setLatLngs(pts);
+    marks.clearLayers();
+    pts.forEach((p, i) => L.circleMarker(p, {radius: 4, color: i < 2 ? "#ff4040" : "#ffcc00"}).addTo(marks));
+    document.getElementById("points_json").value = JSON.stringify(pts.map((p) => [p.lng, p.lat]));
+    document.getElementById("save-drawn").disabled = pts.length < 3;
+    document.getElementById("drawn-area").textContent = pts.length >= 3 ? "about " + Math.round(Massing.lonlatArea(pts)).toLocaleString() + " m2" : (pts.length ? pts.length + " corners" : "");
+  }
+  map.on("click", (e) => { pts.push(e.latlng); redraw(); });
+  document.getElementById("undo").onclick = () => { pts.pop(); redraw(); };
+  document.getElementById("clear").onclick = () => { pts = []; redraw(); };
+})();
+</script>
+{% endblock %}

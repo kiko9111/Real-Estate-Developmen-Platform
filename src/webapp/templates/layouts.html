@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field with context %}
+{% block title %}Site layouts · {{ land.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a></div>
+  <h1>Site layout, massing and best use</h1>
+  <div class="muted">Lay out roads, plots and buildings within this land's conditions, compare options in 3D, and rank them by feasibility.</div>
+</div>
+{% if user.can_edit %}<form method="post" action="/lands/{{ land.id }}/layouts">{{ csrf_field() }}<button class="btn">New layout</button></form>{% endif %}
+</div>
+<div class="panel">
+{% if land.layouts %}
+<table>
+  <tr><th>Layout</th><th>Best option</th><th class="num">NPV</th><th class="num">IRR</th><th>Run</th></tr>
+  {% for r in land.layouts %}{% set best = (r.options or [])|selectattr('best')|list %}
+  <tr><td><a href="/layouts/{{ r.id }}">{{ r.name }}</a>{% if r.error %}<div class="neg small">{{ r.error }}</div>{% endif %}</td>
+    {% if best %}<td>{{ best[0].strategy }}</td><td class="num">{{ best[0].feasibility.npv_pre_tax|money }}</td><td class="num">{{ best[0].feasibility.irr_pre_tax|pct }}</td>
+    {% else %}<td colspan="3" class="muted">{{ 'no option passes the conditions' if r.options else 'not run yet' }}</td>{% endif %}
+    <td class="muted small">{{ r.run_at.strftime('%d %b %Y %H:%M') if r.run_at else '' }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No layout yet.</p>{% endif %}
+</div>
+{% endblock %}

@@ -20,7 +20,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from feasibility import FEDDAN_M2, Study
 
-from . import charts, studies as svc
+from types import SimpleNamespace
+
+from . import charts, layouts as layout_pages, studies as svc
 from .config import Settings
 from .db import Base, make_engine, make_sessionmaker
 from .formschema import form_schema
@@ -746,6 +748,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return []
         return db.scalars(select(Comparable).where(func.lower(Comparable.location).in_(keys))
                           .order_by(Comparable.created_at.desc())).all()
+
+    # ------------------------------------------------------------ site layout (Step 4)
+
+    layout_pages.add_routes(app, SimpleNamespace(
+        render=render, flash=flash, redirect=redirect, get_or_404=get_or_404, current_user=current_user,
+        get_db=get_db, new_study=_new_study, errors=_errors, safe_json=_safe_json))
 
     return app
 

@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field with context %}
+{% block title %}{{ rec.name }} · {{ land.name }}{% endblock %}
+{% macro fmt(v, f) %}{% if v is none %}n/a{% elif f == 'pct' %}{{ v|pct }}{% elif f == 'ratio' %}{{ '%.2f'|format(v) }}{% elif f == 'm2' %}{{ v|num }} m2{% elif f == 'm' %}{{ '%.1f'|format(v) }} m{% elif f == 'num1' %}{{ v|num(1) }}{% else %}{{ v|num }}{% endif %}{% endmacro %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a> / <a href="/lands/{{ land.id }}/layouts">Layouts</a></div>
+    <h1>{{ rec.name }}</h1>
+    <div class="muted">{% if preview %}Boundary {{ preview.area_m2|num }} m2, frontage {{ preview.frontage_m|num }} m, depth {{ preview.depth_m|num }} m{% else %}No boundary yet{% endif %}{% if rec.run_at %} · run {{ rec.run_at.strftime('%d %b %Y %H:%M') }}{% endif %}</div>
+  </div>
+  <div class="actions">
+    <a class="btn secondary" href="/layouts/{{ rec.id }}/boundary">Boundary</a>
+    <a class="btn secondary" href="/layouts/{{ rec.id }}/brief">Design brief</a>
+    <a class="btn secondary" href="/lands/{{ land.id }}/conditions">Conditions</a>
+    {% if user.can_edit %}<form method="post" action="/layouts/{{ rec.id }}/run">{{ csrf_field() }}<button class="btn" {{ 'disabled' if not preview }}>{{ 'Run again' if rec.options else 'Run layout' }}</button></form>{% endif %}
+  </div>
+</div>
+{% if stale %}<div class="note">The land's conditions have changed since this layout last ran. Run it again to check the options against them.</div>{% endif %}
+{% if rec.error %}<div class="errors">{{ rec.error }}</div>{% endif %}
+{% if not opts %}
+<div class="panel"><p class="muted">{% if not preview %}Set the plot boundary first, then run the layout.{% else %}Run the layout to generate options. Fill in the <a href="/lands/{{ land.id }}/conditions">conditions</a> first: coverage, floor-area ratio, floors or height, density, open space, services and setbacks all shape the options.{% endif %}</p></div>
+{% else %}
+
+<div class="panel">
+  <h2>Best use: options ranked</h2>
+  <p class="muted small">Each option runs through the feasibility engine with the land deal, timing, payment plans and costs of {{ opts[0].base_study or 'the base study' }}. Options that pass every condition rank first, then by NPV, IRR and margin.</p>
+  <div class="table-scroll"><table>
+    <tr><th>#</th><th>Option</th><th>Conditions</th><th class="num">NPV</th><th class="num">IRR</th><th class="num">Margin</th><th class="num">Revenue</th><th class="num">Peak funding</th><th class="num">Built area</th><th class="num">FAR</th><th class="num">Coverage</th><th class="num">Units</th></tr>
+    {% for rank, i, op in ranked %}
+    <tr class="{{ 'selected' if i == sel }}">
+      <td>{{ op.rank or '' }}</td>
+      <td><a href="?option={{ i }}">{{ op.strategy }}</a>{% if op.best %} <span class="badge go">best</span>{% endif %}</td>
+      {% if op.error %}<td colspan="10" class="neg">{{ op.error }}</td>
+      {% else %}
+      <td>{% if op.passes %}<span class="badge go">passes</span>{% else %}<span class="badge no_go">fails</span>{% endif %}</td>
+      {% if op.feasibility %}{% set f = op.feasibility %}
+      <td class="num {{ 'neg' if f.npv_pre_tax < 0 }}">{{ f.npv_pre_tax|money }}</td><td class="num">{{ f.irr_pre_tax|pct }}</td><td class="num">{{ f.margin_on_revenue|pct }}</td>
+      <td class="num">{{ f.revenue|money }}</td><td class="num">{{ f.peak_funding_need|money }}</td>
+      {% else %}<td colspan="5" class="neg small">{{ op.feasibility_error }}</td>{% endif %}
+      <td class="num">{{ op.kpis.built_area_m2|num }}</td><td class="num">{{ '%.2f'|format(op.kpis.far) }}</td><td class="num">{{ op.kpis.coverage|pct }}</td><td class="num">{{ op.kpis.units|num }}</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+{% if o and not o.error %}
+<div class="panel">
+  <div class="page-head" style="margin-bottom:8px">
+    <div><h2 style="margin-bottom:2px">{{ o.strategy }}</h2><div class="muted small">{{ o.description }}</div></div>
+    <div class="actions">
+      <div class="tabs" style="margin:0"><button type="button" class="active" data-view="plan">Plan</button><button type="button" data-view="3d">3D massing</button></div>
+      {% if user.can_edit and o.study %}<form method="post" action="/layouts/{{ rec.id }}/options/{{ sel }}/study">{{ csrf_field() }}<button class="btn">Make it a full study</button></form>{% endif %}
+    </div>
+  </div>
+  {% for n in o.notes %}<div class="note">{{ n }}</div>{% endfor %}
+  <div class="viewer">
+    <svg id="plan" class="plan"></svg>
+    <canvas id="massing" class="massing" hidden></canvas>
+    <div class="legend" id="legend"></div>
+    <div class="muted small" id="view-hint">Frontage at the bottom. Drag in the 3D view to turn it, scroll to zoom.</div>
+  </div>
+  <script type="application/json" id="geo">{{ o.geometry|tojson }}</script>
+</div>
+
+<div class="grid two">
+  <div class="panel">
+    <h2>Area schedule</h2>
+    <dl class="facts">
+      <dt>Built area</dt><dd>{{ o.kpis.built_area_m2|num }} m2 · floor-area ratio {{ '%.2f'|format(o.kpis.far) }}</dd>
+      <dt>Footprint</dt><dd>{{ o.kpis.footprint_m2|num }} m2 · coverage {{ o.kpis.coverage|pct }}</dd>
+      <dt>Sellable area</dt><dd>{{ o.kpis.sellable_m2|num }} m2</dd>
+      <dt>Units</dt><dd>{{ o.kpis.units|num }} · {{ o.kpis.units_per_feddan|num(1) }} per feddan</dd>
+      <dt>Population</dt><dd>about {{ o.kpis.persons|num }} · {{ o.kpis.persons_per_feddan|num(1) }} per feddan</dd>
+      <dt>Buildings</dt><dd>{{ o.kpis.buildings|num }}, up to {{ o.kpis.max_floors }} floors</dd>
+    </dl>
+    <h3>By product</h3>
+    <div class="table-scroll"><table>
+      <tr><th>Product</th><th class="num">Buildings</th><th class="num">Floors</th><th class="num">Units</th><th class="num">Unit m2</th><th class="num">Footprint</th><th class="num">Built area</th><th class="num">Share</th><th class="num">Sellable</th></tr>
+      {% for p in o.products %}
+      <tr><td><span class="swatch cat-{{ p.category }}"></span>{{ p.name }}{% if p.mode == 'lease' %} <span class="muted small">(kept and leased)</span>{% endif %}</td>
+        <td class="num">{{ p.buildings|num }}</td><td class="num">{{ p.floors[0] }}{% if p.floors[1] != p.floors[0] %}-{{ p.floors[1] }}{% endif %}</td>
+        <td class="num">{{ p.units|num }}</td><td class="num">{{ p.unit_size_m2|num }}</td><td class="num">{{ p.footprint_m2|num }}</td>
+        <td class="num">{{ p.built_area_m2|num }}</td><td class="num">{{ p.share_of_built_area|pct }}</td><td class="num">{{ p.sellable_m2|num }}</td></tr>
+      {% endfor %}
+      <tr class="total"><td>Total</td><td class="num">{{ o.kpis.buildings|num }}</td><td></td><td class="num">{{ o.kpis.units|num }}</td><td></td><td class="num">{{ o.kpis.footprint_m2|num }}</td><td class="num">{{ o.kpis.built_area_m2|num }}</td><td class="num">100%</td><td class="num">{{ o.kpis.sellable_m2|num }}</td></tr>
+    </table></div>
+    <h3>Land use</h3>
+    <table>
+      <tr><th>Use</th><th class="num">Area m2</th><th class="num">Share</th></tr>
+      {% for u in o.land_use %}<tr><td>{{ u.use }}</td><td class="num">{{ u.area_m2|num }}</td><td class="num">{{ u.share|pct }}</td></tr>{% endfor %}
+      <tr class="total"><td>Plot</td><td class="num">{{ o.kpis.site_area_m2|num }}</td><td class="num">100%</td></tr>
+    </table>
+  </div>
+  <div>
+    <div class="panel">
+      <h2>Compliance with the conditions</h2>
+      <p class="muted small">The design checked against the land's allotment terms. The ministerial decree is issued after the design, so this replaces the old decree sheet as a check, not an input.</p>
+      {% if o.compliance %}
+      <table>
+        <tr><th>Condition</th><th>Required</th><th class="num">This option</th><th></th></tr>
+        {% for c in o.compliance %}
+        <tr><td>{{ c.label }}</td><td>{{ c.required }}</td><td class="num">{{ fmt(c.actual, c.format) }}</td>
+          <td>{% if c.ok %}<span class="badge go">ok</span>{% else %}<span class="badge no_go">fails</span>{% endif %}</td></tr>
+        {% endfor %}
+      </table>
+      {% else %}<p class="muted">The conditions form gives no limits to check. <a href="/lands/{{ land.id }}/conditions">Fill it in.</a></p>{% endif %}
+      {% if o.parking.rows %}
+      <h3>Parking required</h3>
+      <table>{% for r in o.parking.rows %}<tr><td>{{ r.use }}</td><td>{{ r.rule }}</td><td class="num">{{ r.spaces|num }} spaces</td></tr>{% endfor %}
+        <tr class="total"><td colspan="2">Total, about {{ o.parking.area_m2|num }} m2 of surface parking</td><td class="num">{{ o.parking.spaces|num }}</td></tr></table>
+      {% endif %}
+    </div>
+    <div class="panel">
+      <h2>Feasibility of this option</h2>
+      {% if o.feasibility %}{% set f = o.feasibility %}
+      <dl class="facts">
+        <dt>Revenue</dt><dd>{{ f.revenue|money }}</dd>
+        <dt>Development cost</dt><dd>{{ f.development_cost|money }}</dd>
+        <dt>Land cost</dt><dd>{{ f.land_cost|money }}</dd>
+        <dt>Profit before tax</dt><dd>{{ f.profit_pre_tax|money }} · margin {{ f.margin_on_revenue|pct }}</dd>
+        <dt>NPV before tax</dt><dd class="{{ 'neg' if f.npv_pre_tax < 0 }}">{{ f.npv_pre_tax|money }}</dd>
+        <dt>IRR before tax</dt><dd>{{ f.irr_pre_tax|pct }}</dd>
+        <dt>Peak funding</dt><dd>{{ f.peak_funding_need|money }}</dd>
+        <dt>Payback</dt><dd>{{ ('month ' ~ f.payback_month) if f.payback_month else 'not reached' }}</dd>
+      </dl>
+      {% for w in f.warnings %}<div class="note small">{{ w }}</div>{% endfor %}
+      {% if o.premiums %}<p class="muted small">Frontage premiums apply per unit: {% for k, d in o.premiums.items() %}{% for n, s in d.items() %}{{ k }} {{ s|pct(0) }} in "{{ n }}"{% if not loop.last %}, {% endif %}{% endfor %}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
+      {% else %}<p class="neg">{{ o.feasibility_error }}</p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% if user.can_edit %}
+<form method="post" action="/layouts/{{ rec.id }}/delete" onsubmit="return confirm('Delete this layout?');" class="no-print">{{ csrf_field() }}<button class="btn danger small">Delete layout</button></form>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='massing.js') }}"></script>
+<script>
+(function () {
+  const g = document.getElementById("geo");
+  if (!g) return;
+  const geo = JSON.parse(g.textContent);
+  const plan = document.getElementById("plan"), cv = document.getElementById("massing");
+  Massing.plan(plan, geo);
+  Massing.legend(document.getElementById("legend"), geo);
+  let view3d = null;
+  document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-view]").forEach((x) => x.classList.toggle("active", x === b));
+    const is3d = b.dataset.view === "3d";
+    plan.hidden = is3d; cv.hidden = !is3d;
+    if (is3d && !view3d) view3d = Massing.view3d(cv, geo);
+  }));
+})();
+</script>
+{% endblock %}
