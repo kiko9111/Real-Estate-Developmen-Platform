@@ -63,9 +63,9 @@ class CustomField(_M):
 # ---------------------------------------------------------------- land conditions (Step 4 form)
 
 class ShareRule(_M):
-    """A minimum or maximum share for one use, of land or of built area."""
+    """A minimum or maximum share for one use, of land, of built area, or of the number of units."""
     use: str                                  # residential, commercial, services, open space, roads, ...
-    basis: Literal["land", "built_area"] = "built_area"
+    basis: Literal["land", "built_area", "units"] = "built_area"
     min_share: Optional[float] = _pct()
     max_share: Optional[float] = _pct()
 

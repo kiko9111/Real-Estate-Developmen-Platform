@@ -157,3 +157,19 @@ details > .sf-help { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
   .topbar, .actions, .no-print { display: none !important; }
   body { background: #fff; }
 }
+
+/* site layout (Step 4) */
+.map { height: 460px; border-radius: 6px; border: 1px solid var(--rule); }
+.outline { width: 100%; max-height: 340px; background: #fafbfc; border-radius: 6px; }
+.viewer { position: relative; }
+.plan, .massing { width: 100%; height: 620px; display: block; background: #eef2f4; border-radius: 6px; border: 1px solid var(--rule); }
+.massing { cursor: grab; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0 4px; font-size: 12.5px; color: var(--muted); }
+.legend i, .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.swatch.cat-residential { background: #d9822b; }
+.swatch.cat-serviced { background: #7c5cc4; }
+.swatch.cat-hotel { background: #c23b4a; }
+.swatch.cat-commercial { background: #2a9d8f; }
+tr.selected td { background: var(--accent-soft); }
+.badge.no_go { background: var(--no-soft); color: var(--no); }
+.plan[hidden], .massing[hidden] { display: none; }

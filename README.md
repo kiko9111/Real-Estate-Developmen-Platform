@@ -3,12 +3,14 @@
 A platform for studying new land: screening, full feasibility, site layout and
 massing, best use, and investor reports.
 
-This repository holds two parts:
+This repository holds three parts:
 
 - the **feasibility engine** (`src/feasibility`), a Python library that takes one
   land and one set of assumptions and returns the monthly cash flow and the returns;
 - the **web app** (`src/webapp`), which the team uses to record lands, screen them,
-  run full studies and scenarios, scan the market and export investor reports.
+  run full studies and scenarios, scan the market and export investor reports;
+- the **layout generator** (`src/layout`), which lays out roads, plots and buildings
+  on a plot within its conditions and hands each option to the engine.
 
 ## The web app
 
@@ -30,6 +32,17 @@ This repository holds two parts:
   link, unverified until someone checks it; rows can also be added by hand or pasted
   from a spreadsheet. Statistics per product type feed the screening price.
 - **Investor reports**: PDF and PowerPoint (native, editable charts) for any study.
+- **Site layout, massing and best use**: draw the plot on a satellite map, upload KML/KMZ
+  or DXF, or give frontage and depth. The generator lays out a road grid, parks, service
+  plots and building plots, and places villas, townhouses, chalet and apartment buildings,
+  hotels and commercial buildings within the land's coverage, floor-area ratio, height
+  (including height bands from the frontage), density, setback, open-space, services and
+  share rules. Each strategy (four to start, editable per land with the building library's
+  prices and costs) gives a plan view, a rotatable 3D massing view, an area schedule and a
+  compliance check against the conditions. The ministerial decree comes after design, so
+  the decree logic is only this check, never an input. Every option runs through the
+  engine with a base study's land deal, timing, plans and costs, and options are ranked
+  by NPV, IRR and margin; the best one becomes a full study in one click.
 
 ### Run it
 
@@ -158,5 +171,7 @@ All inputs are described in `src/feasibility/inputs.py`.
 ## Not built yet
 
 Unit-by-unit inventory with a sales order, revenue recognised at delivery for
-tax, VAT, debt grace periods and scheduled repayment, site layout and massing,
-and best-use analysis.
+tax, VAT, debt grace periods and scheduled repayment. The layout is a concept
+test-fit (blocks and building footprints on a grid aligned with the frontage),
+not a submission design: curved roads, drawn zones other than bands from the
+frontage, and parking structures are not modelled.

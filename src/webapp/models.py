@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, backref, mapped_column, relationship
 
 from .db import Base
 
@@ -173,3 +173,31 @@ class Comparable(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     scan: Mapped[Optional[MarketScan]] = relationship(back_populates="comparables")
+
+
+class LayoutRecord(Base):
+    """A site layout run (Step 4): the brief, and the options it produced.
+
+    The brief holds the boundary, height bands, building types and strategies
+    (layout.LayoutBrief). Options are kept as JSON, with their geometry, area
+    schedule, compliance check and feasibility result, so the page can be
+    rebuilt without running anything again.
+    """
+    __tablename__ = "layouts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    land_id: Mapped[int] = mapped_column(ForeignKey("lands.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    brief: Mapped[dict] = mapped_column(JSON)
+    base_study_id: Mapped[Optional[int]] = mapped_column(ForeignKey("studies.id", ondelete="SET NULL"), nullable=True)
+    options: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    conditions_used: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+    land: Mapped[Land] = relationship(backref=backref("layouts", cascade="all, delete-orphan",
+                                                         order_by="LayoutRecord.created_at.desc()"))
+    base_study: Mapped[Optional[StudyRecord]] = relationship(foreign_keys=[base_study_id])
+    created_by: Mapped[Optional[User]] = relationship()

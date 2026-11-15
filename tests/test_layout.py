@@ -1,0 +1,181 @@
+"""Layout generator: boundaries, limits, share rules, and the hand-off to the engine."""
+import io
+import json
+import math
+from pathlib import Path
+
+import pytest
+from hypothesis import given, settings, strategies as st
+
+from feasibility import Study, run
+from layout import BoundaryError, Limits, default_brief, generate, make_site, rectangle
+from layout.bestuse import evaluate, option_study
+from layout.brief import HeightBand
+from layout.geometry import lonlat_to_local, parse_dxf, parse_kml
+from layout.limits import ShareLimit
+
+BASE = json.loads((Path(__file__).parent.parent / "examples" / "sample_study.json").read_text())
+LAND = sum(p["area_m2"] for p in BASE["parcels"])
+
+
+def test_site_frame_puts_frontage_on_x_axis():
+    # a rectangle given with its frontage as the third edge, rotated 30 degrees
+    a = math.radians(30)
+    ring = [(x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a))
+            for x, y in [(0, 0), (200, 0), (200, 500), (0, 500)]]
+    s = make_site(ring, frontage_edge=2)
+    assert s.frontage_m == pytest.approx(200)
+    assert s.depth_m == pytest.approx(500)
+    assert s.area_m2 == pytest.approx(100_000)
+    minx, miny, maxx, maxy = s.polygon.bounds
+    assert miny == pytest.approx(0, abs=1e-6) and maxx - minx == pytest.approx(200)
+
+
+def test_bad_boundaries():
+    with pytest.raises(BoundaryError):
+        make_site([(0, 0), (1, 0)])
+    with pytest.raises(BoundaryError):
+        make_site([(0, 0), (5, 0), (5, 5), (0, 5)])       # 25 m2: wrong units
+    with pytest.raises(BoundaryError):
+        parse_kml(b"<kml></kml>")
+
+
+def test_kml_and_projection():
+    kml = b"""<kml xmlns="http://www.opengis.net/kml/2.2"><Placemark><Polygon><outerBoundaryIs><LinearRing>
+    <coordinates>27.0,31.0 27.01,31.0 27.01,31.01 27.0,31.01 27.0,31.0</coordinates></LinearRing></outerBoundaryIs>
+    </Polygon></Placemark></kml>"""
+    pts, _ = lonlat_to_local(parse_kml(kml))
+    s = make_site(pts)
+    # 0.01 deg of longitude at 31 N is about 953 m, of latitude about 1112 m
+    assert s.frontage_m == pytest.approx(953.3, rel=0.003)
+    assert s.depth_m == pytest.approx(1111.9, rel=0.003)
+
+
+def test_dxf_closed_polyline():
+    import ezdxf
+    doc = ezdxf.new()
+    doc.header["$INSUNITS"] = 6
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (10, 0), (10, 10)], close=True)            # small, ignored
+    msp.add_lwpolyline([(0, 0), (300, 0), (300, 400), (0, 400)], close=True)
+    buf = io.StringIO()
+    doc.write(buf)
+    ring = parse_dxf(buf.getvalue().encode())
+    assert make_site(ring).area_m2 == pytest.approx(120_000)
+
+
+def _ok(o):
+    assert "error" not in o, o.get("error")
+    return o
+
+
+def test_limits_hold_and_compliance_reports_them():
+    site = make_site(rectangle(400, 600))
+    L = Limits(coverage=0.18, far=0.5, max_floors=4, open_space_share=0.15, services_share=0.05,
+               setback_sea_m=40, max_units_per_feddan=20)
+    for o in generate(site, default_brief(), L):
+        o = _ok(o)
+        k = o["kpis"]
+        assert k["coverage"] <= 0.18 + 1e-9
+        assert k["far"] <= 0.5 + 1e-9
+        assert k["max_floors"] <= 4
+        assert k["units_per_feddan"] <= 20 + 1e-9
+        assert k["open_space_share"] >= 0.15 - 1e-9
+        assert k["services_share"] >= 0.05 - 1e-9
+        assert all(c["ok"] for c in o["compliance"]), o["compliance"]
+        # nothing is built inside the sea setback
+        for b in o["geometry"]["blocks"]:
+            for x, y, w, d, f, h in b["b"]:
+                assert y >= 40 - 1e-6
+
+
+def test_height_bands_cut_floors():
+    site = make_site(rectangle(300, 900))
+    brief = default_brief().model_copy(update={"height_bands": [
+        HeightBand(name="low", to_depth_m=400, max_height_m=7), HeightBand(name="high", from_depth_m=400, max_floors=6)]})
+    for o in generate(site, brief, Limits(coverage=0.25)):
+        o = _ok(o)
+        for b in o["geometry"]["blocks"]:
+            for x, y, w, d, f, h in b["b"]:
+                cy = sum(p[1] for p in b["ring"]) / len(b["ring"])
+                if cy < 380:
+                    assert h <= 7
+                assert f <= 6
+
+
+def test_units_share_rule_is_met_by_converting_blocks():
+    site = make_site(rectangle(500, 800))
+    L = Limits(coverage=0.2, max_floors=5, shares=[ShareLimit("residential", "units", max_share=0.5)])
+    for o in generate(site, default_brief(), L):
+        o = _ok(o)
+        row = next(c for c in o["compliance"] if c["label"].startswith("Residential share of units"))
+        assert row["ok"], (o["strategy"], row)
+
+
+def test_unknown_use_rule_is_reported_not_hidden():
+    site = make_site(rectangle(300, 300))
+    L = Limits(coverage=0.2, max_floors=3, shares=[ShareLimit("school", "built_area", min_share=0.05)])
+    o = _ok(generate(site, default_brief(), L)[0])
+    row = next(c for c in o["compliance"] if c["label"].startswith("School"))
+    assert row["ok"] is False
+    assert any("School".lower() in n.lower() for n in o["notes"])
+
+
+@settings(max_examples=25, deadline=None)
+@given(w=st.floats(150, 900), d=st.floats(150, 1500), cov=st.floats(0.08, 0.5), far=st.floats(0.2, 2.0),
+       floors=st.integers(1, 12), sea=st.floats(0, 80))
+def test_property_limits_never_exceeded(w, d, cov, far, floors, sea):
+    site = make_site(rectangle(w, d))
+    L = Limits(coverage=cov, far=far, max_floors=floors, setback_sea_m=sea)
+    for o in generate(site, default_brief(), L):
+        if "error" in o:
+            continue
+        k = o["kpis"]
+        assert k["coverage"] <= cov + 1e-9
+        assert k["far"] <= far + 1e-9
+        assert k["max_floors"] <= floors
+        total = sum(u["area_m2"] for u in o["land_use"])
+        assert total == pytest.approx(site.area_m2, rel=1e-6)
+
+
+def test_option_study_runs_in_engine_and_matches_layout():
+    site = make_site(rectangle(300, LAND / 300))
+    brief = default_brief()
+    o = _ok(generate(site, brief, Limits(coverage=0.25, far=0.6, max_floors=4), land_area_m2=LAND)[0])
+    data = option_study(o, brief, BASE)
+    study = Study.model_validate(data)
+    res = run(study)
+    assert res.built_area_m2 == pytest.approx(o["kpis"]["built_area_m2"])
+    by_cat = {}
+    for p in res.products:
+        by_cat[p.category] = by_cat.get(p.category, 0) + p.built_area_m2
+    for p in o["products"]:
+        assert by_cat.get(p["category"], 0) > 0
+    # the base study's money side is kept
+    assert data["land"] == BASE["land"] and data["finance"] == BASE["finance"]
+    # frontage premiums become per-unit premiums with shares
+    prem = [pr for p in data["products"] for pr in p.get("premiums", [])]
+    assert prem and all(0 < pr["share_of_units"] <= 1 for pr in prem)
+
+
+def test_evaluate_ranks_passing_options_first():
+    site = make_site(rectangle(300, LAND / 300))
+    brief = default_brief()
+    opts = evaluate(generate(site, brief, Limits(coverage=0.25, far=0.6, max_floors=4), land_area_m2=LAND), brief, BASE)
+    ranked = sorted([o for o in opts if "rank" in o], key=lambda o: o["rank"])
+    assert [o["rank"] for o in ranked] == list(range(1, len(ranked) + 1))
+    assert sum(o["best"] for o in opts) == 1
+    passing = [o for o in ranked if o["passes"]]
+    npvs = [o["feasibility"]["npv_pre_tax"] for o in passing]
+    assert npvs == sorted(npvs, reverse=True)
+
+
+def test_layout_costs_from_layout_charge_roads_and_green():
+    site = make_site(rectangle(300, LAND / 300))
+    brief = default_brief().model_copy(update={"site_costs": "from_layout"})
+    o = _ok(generate(site, brief, Limits(coverage=0.25, far=0.6, max_floors=4), land_area_m2=LAND)[0])
+    data = option_study(o, brief, BASE)
+    names = [c["name"] for c in data["costs"]["site_costs"]]
+    assert names == ["roads and utilities", "landscape"]
+    road = data["costs"]["site_costs"][0]["rate_per_m2_land"] * LAND
+    assert road == pytest.approx(brief.road_cost_per_m2 * o["kpis"]["roads_share"] * site.area_m2)

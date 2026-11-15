@@ -16,6 +16,7 @@
     <a class="btn secondary" href="/lands/{{ land.id }}/edit">Edit land</a>
     {% endif %}
     <a class="btn secondary" href="/lands/{{ land.id }}/conditions">Conditions</a>
+    <a class="btn secondary" href="/lands/{{ land.id }}/layouts">Site layout</a>
   </div>
 </div>
 
@@ -104,6 +105,20 @@
     </table>
     {% else %}<p class="muted">No full study yet.</p>{% endif %}
   </div>
+</div>
+
+<div class="panel">
+  <div class="page-head" style="margin-bottom:8px"><h2>Site layout and best use</h2><a href="/lands/{{ land.id }}/layouts">All layouts</a></div>
+  {% if land.layouts %}
+  <table>
+    <tr><th>Layout</th><th>Best option</th><th class="num">Built area</th><th class="num">NPV</th><th class="num">IRR</th></tr>
+    {% for r in land.layouts[:5] %}{% set best = (r.options or [])|selectattr('best')|list %}
+    <tr><td><a href="/layouts/{{ r.id }}">{{ r.name }}</a></td>
+      {% if best %}<td>{{ best[0].strategy }}</td><td class="num">{{ best[0].kpis.built_area_m2|num }}</td><td class="num">{{ best[0].feasibility.npv_pre_tax|money }}</td><td class="num">{{ best[0].feasibility.irr_pre_tax|pct }}</td>
+      {% else %}<td colspan="4" class="muted">{{ 'no option passes the conditions' if r.options else 'not run yet' }}</td>{% endif %}</tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No layout yet.{% if user.can_edit %} <a href="/lands/{{ land.id }}/layouts">Lay out roads, plots and buildings</a> within the conditions and rank the options by feasibility.{% endif %}</p>{% endif %}
 </div>
 
 <div class="panel">

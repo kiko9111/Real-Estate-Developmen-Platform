@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}Brief · {{ rec.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a> / <a href="/layouts/{{ rec.id }}">{{ rec.name }}</a></div>
+  <h1>Design brief</h1>
+  <div class="muted">Height bands on the ground, the building types the team would build here with their prices and costs, and the strategies to try. The limits themselves come from the land's <a href="/lands/{{ land.id }}/conditions">conditions form</a>.</div>
+</div></div>
+<div class="note">Every price, cost and size in the starting building library is a placeholder. Replace them with this land's numbers (the market page gives competitor prices). Strategy zones are bands of depth from the frontage: 0 is the frontage, 1 the far edge.</div>
+{{ errors_box(errors) }}
+<form id="brief-form" method="post" action="/layouts/{{ rec.id }}/brief" class="panel">
+  {{ csrf_field() }}
+  <div class="form-row">
+    <div class="field"><label>Layout name</label><input name="name" value="{{ rec.name }}"></div>
+    <div class="field"><label>Base study (land deal, timing, payment plans, costs)</label>
+      <select name="base_study_id"><option value="">Latest study of this land</option>
+        {% for s in land.studies %}<option value="{{ s.id }}" {{ 'selected' if rec.base_study_id == s.id }}>{{ s.name }}</option>{% endfor %}
+      </select></div>
+  </div>
+  {% include "schema_editor.html" %}
+  <div class="sticky-save">{% if user.can_edit %}<button class="btn">Save brief</button>{% endif %}<a href="/layouts/{{ rec.id }}">Back to the layout</a></div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='schema-form.js') }}"></script>
+<script>SchemaForm.attach({form:"brief-form", visual:"sf-visual", raw:"sf-raw", hidden:"sf-data", schema:"sf-schema", value:"sf-value", errors:"sf-errors"});</script>
+{% endblock %}
