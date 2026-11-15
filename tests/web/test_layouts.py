@@ -99,3 +99,42 @@ def test_deleting_land_deletes_layouts(admin):
     rid = _layout(admin, lid)
     assert admin.post(f"/lands/{lid}/delete").status_code == 303
     assert admin.get(f"/layouts/{rid}").status_code == 404
+
+
+def test_team_edits_a_plan_and_rerun_keeps_it(analyst, viewer, app):
+    lid = make_land(analyst)
+    rid = _layout(analyst, lid)
+    assert analyst.post(f"/layouts/{rid}/run").status_code == 303
+    from webapp.models import LayoutRecord
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    i = next(k for k, o in enumerate(rec.options) if "feasibility" in o)
+    n = len(rec.options)
+    name = rec.options[i]["strategy"]
+    blk = next(b for b in rec.options[i]["geometry"]["blocks"] if b["use"] not in ("park", "services", ""))
+    db.close()
+    page = analyst.get(f"/layouts/{rid}?option={i}").text
+    assert "Edit the plan" in page and "Apply and rerun" in page
+    edits = json.dumps({str(blk["id"]): {"use": "park"}})
+    assert viewer.post(f"/layouts/{rid}/options/{i}/edit", {"edits": edits}).status_code == 403
+    r = analyst.post(f"/layouts/{rid}/options/{i}/edit", {"edits": edits})
+    assert r.status_code == 303
+    j = int(r.headers["location"].split("option=")[1])
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    assert len(rec.options) == n + 1 and rec.options[j]["strategy"] == f"{name} (edited)"
+    assert rec.options[j]["edits"] == {str(blk["id"]): {"use": "park"}}
+    assert sum(1 for o in rec.options if o.get("best")) == 1
+    db.close()
+    assert f"{name} (edited)" in analyst.get(f"/layouts/{rid}?option={j}").text
+    # a bad edit is refused with a message, nothing saved
+    r = analyst.post(f"/layouts/{rid}/options/{i}/edit", {"edits": json.dumps({str(blk["id"]): {"use": "castle"}})})
+    assert r.status_code == 303
+    assert "could not be applied" in analyst.get(r.headers["location"]).text
+    # running again keeps the edited option
+    assert analyst.post(f"/layouts/{rid}/run").status_code == 303
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    kept = [o for o in rec.options if o["strategy"] == f"{name} (edited)"]
+    assert len(kept) == 1 and kept[0]["edits"] == {str(blk["id"]): {"use": "park"}} and "rank" in kept[0]
+    db.close()

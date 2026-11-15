@@ -52,6 +52,8 @@ class Block:
     kind: str = ""                                  # what the block is in the plan: superblock, front, ...
     road_poly: Optional[Polygon] = None             # a loop road inside the block (house clusters)
     green_poly: Optional[Polygon] = None            # a pocket park inside the block
+    locked: bool = False                            # set by the team: the mix repair leaves it alone
+    floors_cap: Optional[int] = None                # set by the team: no more floors than this
 
     @property
     def area(self) -> float:
@@ -128,9 +130,9 @@ class Plan:
                 return b
         return self.bands[-1] if self.bands else None
 
-    def floors_for(self, t: Typology, depth: float) -> int:
+    def floors_for(self, t: Typology, depth: float, cap: Optional[int] = None) -> int:
         f = t.floors
-        caps = [self.limits.max_floors]
+        caps = [self.limits.max_floors, cap]
         if self.limits.max_height_m:
             caps.append(math.floor(self.limits.max_height_m / t.floor_height_m + 1e-9))
         b = self.band_at(depth)
@@ -260,7 +262,7 @@ class Plan:
         if not key:
             return
         t = self.brief.typology(key)
-        floors = self.floors_for(t, b.depth)
+        floors = self.floors_for(t, b.depth, b.floors_cap)
         if floors <= 0:
             return
         gap = max(t.gap_m, self.limits.between_buildings_m or 0.0)
@@ -284,15 +286,21 @@ class Plan:
         else:
             fw, fd = t.footprint_w_m, t.footprint_d_m
             cw, cd = fw + gap, fd + gap
-        nx, ny = int((maxx - minx) // cw), int((maxy - miny) // cd)
-        ox = minx + ((maxx - minx) - nx * cw) / 2
-        oy = miny + ((maxy - miny) - ny * cd) / 2
-        for j in range(ny):
-            for i in range(nx):
-                x0, y0 = ox + i * cw, oy + j * cd
-                if not pb.contains(box(x0, y0, x0 + cw, y0 + cd)):
-                    continue
-                b.buildings.append([x0 + cw / 2, y0 + cd / 2, fw, fd, 0.0, floors])
+        def grid(cw, cd, angle):
+            out = []
+            nx, ny = int((maxx - minx) // cw), int((maxy - miny) // cd)
+            ox = minx + ((maxx - minx) - nx * cw) / 2
+            oy = miny + ((maxy - miny) - ny * cd) / 2
+            for j in range(ny):
+                for i in range(nx):
+                    x0, y0 = ox + i * cw, oy + j * cd
+                    if pb.contains(box(x0, y0, x0 + cw, y0 + cd)):
+                        out.append([x0 + cw / 2, y0 + cd / 2, fw, fd, angle, floors])
+            return out
+
+        b.buildings = grid(cw, cd, 0.0)           # long side to the frontage
+        if not b.buildings:                       # a narrow block: turn the buildings end-on
+            b.buildings = grid(cd, cw, 90.0)
         if not b.buildings and t.kind == "block":
             c = b.poly.centroid
             r = box(c.x - fw / 2, c.y - fd / 2, c.x + fw / 2, c.y + fd / 2)
@@ -385,7 +393,7 @@ class Plan:
             if side == "min":
                 cands = [t for t in self.brief.typologies if _matches(t, r.use)]
                 cands.sort(key=self._preference(strategy_keys))
-                donors = [b for b in self.blocks if b.use not in ("park", "services", "")
+                donors = [b for b in self.blocks if b.use not in ("park", "services", "") and not b.locked
                           and not _matches(self.brief.typology(b.use), r.use)
                           and not self._would_break_min(b, rules, by_t)]
                 if not cands or not donors:
@@ -395,7 +403,7 @@ class Plan:
                     return
                 new = cands[0].key
             else:
-                donors = [b for b in self.blocks if b.use not in ("park", "services", "")
+                donors = [b for b in self.blocks if b.use not in ("park", "services", "") and not b.locked
                           and _matches(self.brief.typology(b.use), r.use)]
                 if not donors:
                     return
@@ -562,7 +570,8 @@ class Plan:
         blocks = []
         for b in self.blocks:
             t = self.typ_of(b)
-            blocks.append({"use": b.use or "", "typ": typ_index[t.key] if t else None,
+            blocks.append({"id": b.id, "use": b.use or "", "locked": b.locked, "cap": b.floors_cap,
+                           "floors": max((x[5] for x in b.buildings), default=0), "typ": typ_index[t.key] if t else None,
                            "ring": _ring(b.poly),
                            "plots": [[[round(x, 1), round(y, 1)] for x, y in q] for q in b.plots],
                            "b": [[round(x, 1), round(y, 1), round(w, 1), round(d, 1), round(a, 1), f,
@@ -681,8 +690,14 @@ def parking(plan: Plan, by_t: dict) -> dict:
 # ---------------------------------------------------------------- entry point
 
 def generate(site: Site, brief: LayoutBrief, limits: Limits, land_area_m2: Optional[float] = None,
-             strategies: Optional[list[str]] = None) -> list[dict]:
-    """One option per strategy. A strategy that cannot be laid out returns an error entry."""
+             strategies: Optional[list[str]] = None, edits: Optional[dict] = None) -> list[dict]:
+    """One option per strategy. A strategy that cannot be laid out returns an error entry.
+
+    `edits` holds the team's changes to blocks, {strategy name: {block id: {"use": ..., "floors": ...}}}.
+    They are applied after the mix is assigned; edited blocks are locked, so the mix repair works around
+    them. The limits still hold: an edit asking for more floors than a height limit allows is capped, and
+    a cap on built area or density still thins every block evenly.
+    """
     land = land_area_m2 or site.area_m2
     out = []
     for s in brief.strategies:
@@ -694,6 +709,8 @@ def generate(site: Site, brief: LayoutBrief, limits: Limits, land_area_m2: Optio
             p.cut()
             p.reserve()
             p.assign()
+            if edits and s.name in edits:
+                apply_edits(p, edits[s.name])
             p.fill_all()
             p.repair_shares()
             p.enforce_caps()
@@ -705,6 +722,34 @@ def generate(site: Site, brief: LayoutBrief, limits: Limits, land_area_m2: Optio
         except ValueError as e:
             out.append({"strategy": s.name, "description": s.description, "error": str(e)})
     return out
+
+
+def apply_edits(p: Plan, edits: dict) -> None:
+    """Set the use and the floor cap of the blocks the team changed, and lock them."""
+    by_id = {b.id: b for b in p.blocks}
+    keys = {t.key for t in p.brief.typologies}
+    missing = []
+    for bid, e in edits.items():
+        b = by_id.get(int(bid))
+        if b is None:
+            missing.append(str(bid))
+            continue
+        use = e.get("use")
+        if use:
+            if use not in keys and use not in ("park", "services"):
+                raise ValueError(f"block {bid}: unknown use '{use}'")
+            b.use = use
+        if e.get("floors") is not None:
+            f = int(e["floors"])
+            if f < 1:
+                raise ValueError(f"block {bid}: floors must be at least 1")
+            b.floors_cap = f
+        b.locked = True
+    if missing:
+        p.notes.append("Edits for blocks " + ", ".join(missing) + " were skipped: the plan no longer has them "
+                       "(the boundary or the strategy changed).")
+    if edits:
+        p.notes.append(f"{len(edits) - len(missing)} block(s) edited by the team; the mix repair leaves them as set.")
 
 
 # ---------------------------------------------------------------- helpers

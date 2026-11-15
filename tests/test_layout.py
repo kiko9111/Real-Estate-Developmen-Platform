@@ -212,3 +212,64 @@ def test_small_plot_skips_lagoons_with_a_note():
     o = _ok(generate(site, default_brief(), Limits(coverage=0.25, max_floors=4), strategies=["Lagoon resort"])[0])
     assert not o["geometry"]["water"]
     assert any("too small for lagoons" in n for n in o["notes"])
+
+
+def test_team_edits_change_blocks_and_keep_limits():
+    site = make_site(rectangle(400, LAND / 400))
+    brief = default_brief()
+    L = Limits(coverage=0.22, far=0.6, max_floors=5, max_height_m=18)
+    opts = evaluate(generate(site, brief, L, land_area_m2=LAND, strategies=["Villa resort"]), brief, BASE)
+    o = _ok(opts[0])
+    blocks = o["geometry"]["blocks"]
+    assert all("id" in b for b in blocks)
+    # turn the first house block into apartments and the second into a park; ask for too many floors
+    houses = [b for b in blocks if b["use"] in ("villa", "twin", "townhouse")]
+    assert len(houses) >= 2
+    orig = houses[1]["use"]
+    a, p = houses[0]["id"], houses[1]["id"]
+    from layout.bestuse import edit_option
+    j = edit_option(opts, 0, {a: {"use": "apartment", "floors": 9}, p: {"use": "park"}}, site, brief, L, LAND, BASE)
+    e = _ok(opts[j])
+    assert e["strategy"] == "Villa resort (edited)" and e["base_strategy"] == "Villa resort"
+    assert len(opts) == 2 and sum(x["best"] for x in opts) == 1 and {x["rank"] for x in opts} == {1, 2}
+    eb = {b["id"]: b for b in e["geometry"]["blocks"]}
+    assert eb[a]["use"] == "apartment" and eb[a]["locked"] and eb[p]["use"] == "park" and not eb[p]["b"]
+    # the height limit wins over the edit
+    assert all(q[5] <= 5 for q in eb[a]["b"]) and eb[a]["b"]
+    assert all(c["ok"] for c in e["compliance"] if c["label"].startswith(("Floors", "Coverage", "Floor-area")))
+    assert "feasibility" in e
+    # editing the edited option adds to its edits; an empty change puts a block back
+    j2 = edit_option(opts, j, {p: {}, a: {"floors": 2}}, site, brief, L, LAND, BASE)
+    assert j2 == j and len(opts) == 2
+    assert opts[j]["edits"] == {str(a): {"use": "apartment", "floors": 2}}
+    eb = {b["id"]: b for b in opts[j]["geometry"]["blocks"]}
+    assert eb[p]["use"] == orig and not eb[p]["locked"]
+    assert all(q[5] <= 2 for q in eb[a]["b"])
+    with pytest.raises(ValueError):
+        edit_option(opts, j, {a: {"use": "castle"}}, site, brief, L, LAND, BASE)
+
+
+def test_edited_blocks_are_not_donated_by_the_mix_repair():
+    site = make_site(rectangle(500, 800))
+    brief = default_brief()
+    L = Limits(coverage=0.2, max_floors=5, shares=[ShareLimit("residential", "units", max_share=0.5)])
+    plain = _ok(generate(site, brief, L, strategies=["Compact chalets"])[0])
+    res = [b for b in plain["geometry"]["blocks"] if b["use"] in ("chalet", "apartment")]
+    edits = {str(b["id"]): {"use": "chalet"} for b in res[:3]}
+    o = _ok(generate(site, brief, L, strategies=["Compact chalets"], edits={"Compact chalets": edits})[0])
+    eb = {str(b["id"]): b for b in o["geometry"]["blocks"]}
+    assert all(eb[k]["use"] == "chalet" and eb[k]["locked"] for k in edits)
+    row = next(c for c in o["compliance"] if c["label"].startswith("Residential share of units"))
+    assert row["ok"]
+
+
+def test_narrow_plot_still_fills_its_blocks():
+    # 250 m of frontage: too narrow for lines across each half, and blocks too narrow for long buildings
+    site = make_site(rectangle(250, 672))
+    L = Limits(coverage=0.2, far=0.4, max_floors=3, services_share=0.05, open_space_share=0.3, setback_sea_m=200)
+    opts = {o["strategy"]: _ok(o) for o in generate(site, default_brief(), L)}
+    grid = opts.pop("Simple grid")["kpis"]["built_area_m2"]
+    for name, o in opts.items():
+        assert o["kpis"]["built_area_m2"] >= 0.6 * grid, name
+        empty = [b for b in o["geometry"]["blocks"] if b["use"] not in ("park", "") and not b["b"]]
+        assert len(empty) <= 1, (name, [b["use"] for b in empty])

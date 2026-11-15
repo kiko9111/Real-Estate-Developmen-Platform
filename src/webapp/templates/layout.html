@@ -51,6 +51,7 @@
     <div><h2 style="margin-bottom:2px">{{ o.strategy }}</h2><div class="muted small">{{ o.description }}</div></div>
     <div class="actions">
       <div class="tabs" style="margin:0"><button type="button" class="active" data-view="plan">Plan</button><button type="button" data-view="3d">3D massing</button></div>
+      {% if user.can_edit %}<button type="button" class="btn secondary" id="edit-toggle">Edit the plan</button>{% endif %}
       {% if user.can_edit and o.study %}<form method="post" action="/layouts/{{ rec.id }}/options/{{ sel }}/study">{{ csrf_field() }}<button class="btn">Make it a full study</button></form>{% endif %}
     </div>
   </div>
@@ -62,6 +63,27 @@
     <div class="muted small" id="view-hint">Frontage at the bottom. Drag in the 3D view to turn it, scroll to zoom.</div>
   </div>
   <script type="application/json" id="geo">{{ o.geometry|tojson }}</script>
+  {% if user.can_edit %}
+  <div class="editor" id="editor" hidden>
+    <h3>Edit the plan</h3>
+    <p class="muted small">Click a block on the plan, choose what it holds and, if you like, a floor cap, then add the change. When you apply, the option is laid out again with your changes{% if not o.edits %} and saved as "{{ o.strategy }} (edited)", adding to any earlier edits{% endif %}, checked against the conditions and run through the feasibility engine; the original stays for comparison. Height limits still apply, and a cap on built area or density still thins every block evenly. Other blocks may change to keep the required mix.</p>
+    <div class="editor-row">
+      <div><strong id="ed-title">No block selected</strong><div class="muted small" id="ed-now"></div></div>
+      <label>Use <select id="ed-use" disabled>
+        {% for t in o.geometry.typologies %}<option value="{{ t.key }}">{{ t.name }}</option>{% endfor %}
+        <option value="park">Park</option><option value="services">Services plot</option>
+      </select></label>
+      <label>Floor cap <input id="ed-floors" type="number" min="1" step="1" placeholder="as allowed" disabled style="width:7em"></label>
+      <button type="button" class="btn secondary" id="ed-add" disabled>Add change</button>
+      <button type="button" class="btn secondary" id="ed-reset" disabled title="Put this block back as generated">Undo edit</button>
+    </div>
+    <ul id="ed-list" class="small"></ul>
+    <form method="post" action="/layouts/{{ rec.id }}/options/{{ sel }}/edit" id="ed-form">{{ csrf_field() }}
+      <input type="hidden" name="edits" id="ed-edits">
+      <button class="btn" id="ed-apply" disabled>Apply and rerun</button>
+    </form>
+  </div>
+  {% endif %}
 </div>
 
 <div class="grid two">
@@ -154,6 +176,65 @@
     plan.hidden = is3d; cv.hidden = !is3d;
     if (is3d && !view3d) view3d = Massing.view3d(cv, geo);
   }));
+
+  // ---- editing
+  const toggle = document.getElementById("edit-toggle"), box = document.getElementById("editor");
+  if (!toggle || !box) return;
+  const $ = (id) => document.getElementById(id);
+  const useSel = $("ed-use"), floorsIn = $("ed-floors"), list = $("ed-list");
+  const names = {park: "Park", services: "Services plot", "": "Unused"};
+  geo.typologies.forEach((t) => { names[t.key] = t.name; });
+  const byId = {};
+  geo.blocks.forEach((b) => { byId[b.id] = b; });
+  const pending = {};
+  let cur = null, on = false;
+  const ed = Massing.editor(plan, geo, (b) => {
+    cur = b;
+    $("ed-title").textContent = "Block " + b.id;
+    $("ed-now").textContent = "Now: " + names[b.use || ""] + (b.floors ? ", " + b.floors + " floors" : "") +
+      (b.locked ? " (edited earlier)" : "");
+    const p = pending[b.id];
+    useSel.value = p && p.use ? p.use : (b.use || geo.typologies[0].key);
+    floorsIn.value = p && p.floors ? p.floors : (b.cap || "");
+    [useSel, floorsIn, $("ed-add")].forEach((x) => { x.disabled = false; });
+    $("ed-reset").disabled = !(b.locked || pending[b.id]);
+  });
+  function render() {
+    const ids = Object.keys(pending);
+    list.innerHTML = "";
+    ids.forEach((id) => {
+      const p = pending[id], li = document.createElement("li");
+      li.textContent = "Block " + id + ": " + (Object.keys(p).length === 0 ? "back as generated" :
+        names[p.use] + (p.floors ? ", at most " + p.floors + " floors" : ""));
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "link"; x.textContent = "remove";
+      x.addEventListener("click", () => { delete pending[id]; ed.mark(id, false); render(); });
+      li.append(" ", x);
+      list.appendChild(li);
+    });
+    $("ed-edits").value = JSON.stringify(pending);
+    $("ed-apply").disabled = ids.length === 0;
+  }
+  $("ed-add").addEventListener("click", () => {
+    if (!cur) return;
+    const f = parseInt(floorsIn.value, 10);
+    pending[cur.id] = {use: useSel.value, floors: f > 0 ? f : null};
+    ed.mark(cur.id, true);
+    render();
+  });
+  $("ed-reset").addEventListener("click", () => {
+    if (!cur) return;
+    if (cur.locked) { pending[cur.id] = {}; ed.mark(cur.id, true); } else { delete pending[cur.id]; ed.mark(cur.id, false); }
+    render();
+  });
+  toggle.addEventListener("click", () => {
+    on = !on;
+    box.hidden = !on;
+    ed.setOn(on);
+    toggle.classList.toggle("active", on);
+    toggle.textContent = on ? "Stop editing" : "Edit the plan";
+    if (on) document.querySelector('[data-view="plan"]').click();
+  });
 })();
 </script>
 {% endblock %}

@@ -5,6 +5,7 @@
    Massing.view3d(canvas, geo)   rotatable 3D massing on a canvas
    Massing.legend(el, geo)       colour key
    Massing.outline(svg, pts, e)  boundary outline with numbered edges
+   Massing.editor(svg, geo, cb)  click-to-select blocks over the plan, for editing
 */
 (function () {
   "use strict";
@@ -86,6 +87,49 @@
       t.textContent = band.name;
       svg.appendChild(t);
     }
+    // blocks the team edited: a dashed outline
+    for (const b of geo.blocks) {
+      if (b.locked) g.appendChild(svgEl("polygon", {points: pts(b.ring), fill: "none", stroke: "#1f78b4",
+                                                     "stroke-width": 2, "stroke-dasharray": "6 4"}));
+    }
+    svg._g = g;
+    return g;
+  }
+
+  // Click-to-select layer over the plan. cb(block) on each click; returns {setOn, mark, select}.
+  function editor(svg, geo, cb) {
+    const g = svg._g;
+    const layer = svgEl("g", {class: "edit-layer"});
+    layer.style.display = "none";
+    g.appendChild(layer);
+    const shapes = {};
+    let current = null;
+    for (const b of geo.blocks) {
+      const p = svgEl("polygon", {points: pts(b.ring), fill: "rgba(31,120,180,0)", stroke: "rgba(31,120,180,.5)",
+                                  "stroke-width": 1, "data-id": b.id, class: "edit-block"});
+      p.style.cursor = "pointer";
+      p.addEventListener("click", () => { select(b.id); cb(b); });
+      layer.appendChild(p);
+      shapes[b.id] = p;
+    }
+    function select(id) {
+      if (current !== null && shapes[current]) {
+        shapes[current].setAttribute("stroke-width", 1);
+        shapes[current].setAttribute("fill", shapes[current].dataset.pending ? "rgba(31,120,180,.25)" : "rgba(31,120,180,0)");
+      }
+      current = id;
+      if (id !== null && shapes[id]) {
+        shapes[id].setAttribute("stroke-width", 4);
+        shapes[id].setAttribute("fill", "rgba(31,120,180,.35)");
+      }
+    }
+    function mark(id, on) {
+      const p = shapes[id];
+      if (!p) return;
+      if (on) p.dataset.pending = "1"; else delete p.dataset.pending;
+      if (id !== current) p.setAttribute("fill", on ? "rgba(31,120,180,.25)" : "rgba(31,120,180,0)");
+    }
+    return {setOn: (on) => { layer.style.display = on ? "" : "none"; }, mark: mark, select: select};
   }
 
   function legend(el, geo) {
@@ -237,5 +281,5 @@
     return Math.abs(a) / 2;
   }
 
-  window.Massing = {plan: plan, view3d: view3d, legend: legend, outline: outline, lonlatArea: lonlatArea};
+  window.Massing = {plan: plan, editor: editor, view3d: view3d, legend: legend, outline: outline, lonlatArea: lonlatArea};
 })();

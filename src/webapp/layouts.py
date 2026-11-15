@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
 from layout import Boundary, BoundaryError, LayoutBrief, Limits, default_brief, generate, make_site, rectangle
-from layout.bestuse import evaluate
+from layout.bestuse import edit_option, edited_name, evaluate
 from layout.geometry import lonlat_to_local, parse_dxf, parse_kml, parse_points_text
 
 from . import studies as svc
@@ -71,14 +71,26 @@ def base_study(land: Land, rec: LayoutRecord) -> tuple[dict, str]:
 
 
 def run_layout(rec: LayoutRecord) -> None:
+    """Lay out every strategy and run it through the engine. The team's edited options are laid out
+    again with their edits, so a rerun after a change to the conditions or the base study keeps them."""
     land = rec.land
     cond = LandConditions.model_validate(land.conditions or {})
+    kept = {o["base_strategy"]: o["edits"] for o in (rec.options or []) if o.get("edits") and o.get("base_strategy")}
     rec.conditions_used = land.conditions or {}
     rec.run_at = now()
     try:
         brief = LayoutBrief.model_validate(rec.brief)
         site = site_of(brief)
-        options = generate(site, brief, Limits.from_conditions(cond), land_area_m2=land.area_m2)
+        limits = Limits.from_conditions(cond)
+        options = generate(site, brief, limits, land_area_m2=land.area_m2)
+        names = {s.name for s in brief.strategies}
+        for strategy, edits in kept.items():
+            if strategy not in names:
+                continue
+            for o in generate(site, brief, limits, land_area_m2=land.area_m2, strategies=[strategy],
+                              edits={strategy: edits}):
+                o.update({"strategy": edited_name(strategy), "base_strategy": strategy, "edits": edits})
+                options.append(o)
         base, base_name = base_study(land, rec)
         options = evaluate(options, brief, base)
         for o in options:
@@ -280,6 +292,38 @@ def add_routes(app, h) -> None:
         st = h.new_study(db, rec.land, data["name"], data, user, description=desc)
         h.flash(request, "Study created from the layout option. Its products and built area come from the layout.")
         return h.redirect(f"/studies/{st.id}")
+
+    @app.post("/layouts/{rid}/options/{i}/edit", dependencies=[Depends(verify_csrf)])
+    def edit_option_route(request: Request, rid: int, i: int, edits: str = Form(...), user=Depends(current_user),
+                          db=Depends(get_db)):
+        """Apply the team's block changes ({block id: {"use": ..., "floors": ...}}) to option i."""
+        require_editor(user)
+        rec = h.get_or_404(db, LayoutRecord, rid)
+        opts = json.loads(json.dumps(rec.options or []))
+        if not (0 <= i < len(opts)) or "error" in opts[i]:
+            raise HTTPException(404, "No such option.")
+        try:
+            changes = json.loads(edits)
+            if not isinstance(changes, dict) or not changes:
+                raise ValueError("no changes to apply")
+            land = rec.land
+            brief = LayoutBrief.model_validate(rec.brief)
+            cond = LandConditions.model_validate(rec.conditions_used or land.conditions or {})
+            base, base_name = base_study(land, rec)
+            j = edit_option(opts, i, changes, site_of(brief), brief, Limits.from_conditions(cond), land.area_m2, base)
+            opts[j]["base_study"] = base_name
+        except (BoundaryError, ValidationError, ValueError) as e:
+            h.flash(request, f"The edit could not be applied: {e}", "error")
+            return h.redirect(f"/layouts/{rec.id}?option={i}")
+        rec.options = json.loads(json.dumps(opts, default=float))
+        db.commit()
+        o = opts[j]
+        msg = f"Edited plan saved as '{o['strategy']}'"
+        msg += f", ranked {o['rank']} of {sum(1 for x in opts if 'rank' in x)}." if "rank" in o else "."
+        if not o.get("passes", True):
+            msg += " It breaks a condition; see the compliance check."
+        h.flash(request, msg)
+        return h.redirect(f"/layouts/{rec.id}?option={j}")
 
     @app.post("/layouts/{rid}/delete", dependencies=[Depends(verify_csrf)])
     def delete_layout(request: Request, rid: int, user=Depends(current_user), db=Depends(get_db)):

@@ -35,6 +35,8 @@ from shapely.prepared import prep
 from .generator import Block, Plan, _first, _polys
 
 
+MIN_STRIP_M = 70.0      # narrowest strip of blocks between two lines towards the beach
+
 def rect(cx: float, cy: float, w: float, d: float, ang: float = 0.0) -> Polygon:
     r = box(cx - w / 2, cy - d / 2, cx + w / 2, cy + d / 2)
     return affinity.rotate(r, ang, origin=(cx, cy)) if ang else r
@@ -90,17 +92,23 @@ class ResortPlan(Plan):
         # lines towards the beach, spread evenly across each half of the plot
         spine_edge = half_g + cw
         half_w = (maxx - minx) / 2 - spine_edge - other
+        # no strip narrower than MIN_STRIP_M between lines: a narrow plot gets fewer lines, or none
         n = max(1, int(round(half_w / rs.local_every_m)))
+        while n > 0 and half_w / (n + 1) < MIN_STRIP_M:
+            n -= 1
+        if n == 0:
+            self.notes.append("The plot is narrow, so there are no sea-view corridors or lines across each half; "
+                              "blocks run from the spine to the side.")
         offs = [spine_edge + half_w * i / (n + 1) for i in range(1, n + 1)]
         k = max(1, int(round(rs.corridor_every_m / (half_w / (n + 1)))))
-        pick = [i for i in range(1, n + 1) if i % k == 0] or [int(math.ceil(n / 2))]
+        pick = ([i for i in range(1, n + 1) if i % k == 0] or [int(math.ceil(n / 2))]) if n else []
         corridor_off = [offs[i - 1] for i in pick] if (rs.corridor_m > 0 or rs.lagoons) else []
         corridor_x = [cx + sg * o for o in corridor_off for sg in (-1, 1)]
         local_x = [cx + sg * o for o in offs if o not in corridor_off for sg in (-1, 1)]
         reach = min(back - 40, max(y_first + 60, rs.corridor_reach * D))
         lag_end = min(back - 40, y_first + rs.lagoon_reach_m)
         water_parts = []
-        lagoons = rs.lagoons and half_w / (n + 1) >= 2.4 * rs.lagoon_w_m and lag_end - y_first > 150
+        lagoons = rs.lagoons and n > 0 and half_w / (n + 1) >= 2.4 * rs.lagoon_w_m and lag_end - y_first > 150
         if rs.lagoons and not lagoons:
             self.notes.append("The plot is too small for lagoons in this pattern, so none were drawn.")
         for j, x in enumerate(corridor_x):
@@ -188,7 +196,7 @@ class ResortPlan(Plan):
         t = self.typ_of(b)
         if t is None:
             return
-        floors = self.floors_for(t, b.depth)
+        floors = self.floors_for(t, b.depth, b.floors_cap)
         if floors <= 0:
             return
         if t.kind in ("detached", "row"):
@@ -209,19 +217,28 @@ class ResortPlan(Plan):
         if area.is_empty:
             return
         pa = prep(area)
-        fw, fd = t.footprint_w_m, t.footprint_d_m
-        px, py = fw + gap, fd + gap
         minx, miny, maxx, maxy = area.bounds
-        ny = int((maxy - miny - fd) // py) + 1
-        oy = miny + ((maxy - miny) - (fd + (ny - 1) * py)) / 2 + fd / 2
-        for j in range(max(ny, 0)):
-            y = oy + j * py
-            nx = int((maxx - minx - fw) // px) + 2
-            ox = minx + fw / 2 - (px / 2 if j % 2 else 0.0)
-            for i in range(nx + 1):
-                x = ox + i * px
-                if pa.contains(rect(x, y, fw, fd)):
-                    b.buildings.append([x, y, fw, fd, 0.0, floors])
+
+        def rows(ex, ey, angle):
+            """Staggered rows of buildings taking ex by ey on the ground."""
+            out = []
+            px, py = ex + gap, ey + gap
+            ny = int((maxy - miny - ey) // py) + 1
+            oy = miny + ((maxy - miny) - (ey + (ny - 1) * py)) / 2 + ey / 2
+            for j in range(max(ny, 0)):
+                y = oy + j * py
+                nx = int((maxx - minx - ex) // px) + 2
+                ox = minx + ex / 2 - (px / 2 if j % 2 else 0.0)
+                for i in range(nx + 1):
+                    x = ox + i * px
+                    if pa.contains(rect(x, y, ex, ey)):
+                        out.append([x, y, t.footprint_w_m, t.footprint_d_m, angle, floors])
+            return out
+
+        fw, fd = t.footprint_w_m, t.footprint_d_m
+        b.buildings = rows(fw, fd, 0.0)          # long side to the sea
+        if not b.buildings:                       # a narrow block: turn the buildings end-on to the sea
+            b.buildings = rows(fd, fw, 90.0)
         if not b.buildings:
             c = area.representative_point()
             if pa.contains(rect(c.x, c.y, fw, fd)):
