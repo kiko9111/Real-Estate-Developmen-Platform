@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}Conditions · {{ land.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a></div>
+  <h1>Land conditions</h1>
+  <div class="muted">The allotment terms for this land, entered by hand. Conditions differ by location, so fill in what applies and use the custom rows for anything else. No ministerial decree is assumed: it is issued after the design.</div>
+</div></div>
+<div class="note">The feasibility study uses the floor area ratio, coverage, floors or height zones, built-area ceiling, built-area share rules for residential, commercial, hotel and serviced use, and the build deadline. The rest is stored for the layout and massing step.</div>
+{{ errors_box(errors) }}
+<form id="cond-form" method="post" action="/lands/{{ land.id }}/conditions" class="panel">
+  {{ csrf_field() }}
+  {% include "schema_editor.html" %}
+  <div class="sticky-save">{% if user.can_edit %}<button class="btn">Save conditions</button>{% endif %}<a href="/lands/{{ land.id }}">Back to the land</a></div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='schema-form.js') }}"></script>
+<script>SchemaForm.attach({form:"cond-form", visual:"sf-visual", raw:"sf-raw", hidden:"sf-data", schema:"sf-schema", value:"sf-value", errors:"sf-errors"});</script>
+{% endblock %}

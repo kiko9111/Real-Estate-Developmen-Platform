@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field, errors_box with context %}
+{% block title %}Screening · {{ land.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <div class="crumbs"><a href="/">Lands</a> / <a href="/lands/{{ land.id }}">{{ land.name }}</a></div>
+  <h1>Quick screening</h1>
+  <div class="muted">About twenty numbers for a go/no-go. The screener builds a one-product study and runs the full feasibility engine on it, then solves for the most the land can cost.</div>
+</div></div>
+<div class="note">Filled in from the land record, its conditions and the median market price where available. Shares and rates are fractions: 0.10 means 10%.</div>
+{{ errors_box(errors) }}
+<form method="post" action="/lands/{{ land.id }}/screen">
+  {{ csrf_field() }}
+  {% for title, keys in groups %}
+  <div class="panel">
+    <h2>{{ title }}</h2>
+    <div class="form-row">
+      {% for k in keys %}
+      {% set f = fields[k] %}{% set lab = labels[k] %}{% set v = values.get(k) %}
+      <div class="field">
+        <label for="f-{{ k }}">{{ lab[0] }}{% if f.is_required() %} *{% endif %}</label>
+        {% if k == 'partnership_basis' %}
+          <select id="f-{{ k }}" name="{{ k }}">{% for o in ['profit', 'revenue'] %}<option {{ 'selected' if v == o }}>{{ o }}</option>{% endfor %}</select>
+        {% elif k == 'product_category' %}
+          <select id="f-{{ k }}" name="{{ k }}">{% for o in ['residential', 'commercial', 'hotel', 'serviced'] %}<option {{ 'selected' if v == o }}>{{ o }}</option>{% endfor %}</select>
+        {% else %}
+          <input id="f-{{ k }}" type="number" step="any" name="{{ k }}" value="{{ v if v is not none else '' }}" {{ 'required' if f.is_required() }}>
+        {% endif %}
+        {% if lab[1] %}<div class="hint">{{ lab[1] }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  <div class="sticky-save"><button class="btn">Run screening</button><a href="/lands/{{ land.id }}">Cancel</a></div>
+</form>
+{% endblock %}

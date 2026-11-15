@@ -1,0 +1,11 @@
+{# include with: form_action, schema, value, submit_label, extra (optional block above) #}
+<div class="tabs no-print">
+  <button type="button" data-sf-tab="visual" class="active">Form</button>
+  <button type="button" data-sf-tab="raw">JSON</button>
+</div>
+<div id="sf-errors" class="errors" hidden></div>
+<div id="sf-visual"></div>
+<textarea id="sf-raw" class="raw-json" spellcheck="false"></textarea>
+<input type="hidden" name="data" id="sf-data">
+<script type="application/json" id="sf-schema">{{ schema|tojson }}</script>
+<script type="application/json" id="sf-value">{{ value|tojson }}</script>

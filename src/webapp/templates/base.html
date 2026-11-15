@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Development Platform{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if user %}
+<header class="topbar"><div class="inner">
+  <a class="brand" href="/">Development Platform</a>
+  <nav class="nav">
+    {% set p = request.url.path %}
+    <a href="/" class="{{ 'active' if p == '/' or p.startswith('/lands') or p.startswith('/studies') or p.startswith('/screenings') }}">Lands</a>
+    <a href="/market" class="{{ 'active' if p.startswith('/market') }}">Market</a>
+    {% if user.is_admin %}<a href="/users" class="{{ 'active' if p.startswith('/users') }}">Team</a>{% endif %}
+  </nav>
+  <div class="who">
+    <a href="/account" style="color:inherit">{{ user.name }}</a> <span class="badge">{{ user.role }}</span>
+    <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button>Sign out</button></form>
+  </div>
+</div></header>
+{% endif %}
+<main>
+{% if flash %}<div class="flash {{ flash.kind }}">{{ flash.msg }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

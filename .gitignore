@@ -4,3 +4,8 @@ __pycache__/
 .hypothesis/
 *.egg-info/
 .venv/
+
+# web app local data
+/data/
+*.db
+.env

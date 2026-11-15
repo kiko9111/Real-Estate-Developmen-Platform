@@ -3,9 +3,50 @@
 A platform for studying new land: screening, full feasibility, site layout and
 massing, best use, and investor reports.
 
-This repository currently holds the first part, the **feasibility engine**. It
-is a Python library that takes one land and one set of assumptions and returns
-the monthly cash flow and the returns. The web app will sit on top of it.
+This repository holds two parts:
+
+- the **feasibility engine** (`src/feasibility`), a Python library that takes one
+  land and one set of assumptions and returns the monthly cash flow and the returns;
+- the **web app** (`src/webapp`), which the team uses to record lands, screen them,
+  run full studies and scenarios, scan the market and export investor reports.
+
+## The web app
+
+- **Team logins** with three roles: admin (manages accounts), analyst (creates and
+  edits), viewer (reads and downloads reports).
+- **Lands**: location, size, parcels, frontage, the offer, legal facts, custom fields,
+  and a full **land-conditions form** (use, coverage, floor area ratio, floors, height
+  zones, density, service and open-space shares, share rules, setbacks, parking,
+  phasing, land payment terms, fees, custom rows). The parts the engine understands
+  feed the studies; the rest is kept for the layout and massing step.
+- **Quick screening**: about twenty numbers, a go / borderline / no-go verdict with
+  reasons, and the most the land can cost. It builds a one-product study and runs the
+  full engine, so it agrees with a full study of the same inputs.
+- **Full studies**: every engine input in a generated form (or as JSON), results,
+  yearly cash flow, standard scenarios, sensitivity, residual land value, risk ranges,
+  scenario copies and side-by-side comparison.
+- **Market scan**: competitor prices and payment plans by location. A web scan (Claude
+  with web search, needs `ANTHROPIC_API_KEY`) returns each project with its source
+  link, unverified until someone checks it; rows can also be added by hand or pasted
+  from a spreadsheet. Statistics per product type feed the screening price.
+- **Investor reports**: PDF and PowerPoint (native, editable charts) for any study.
+
+### Run it
+
+```bash
+pip install -e ".[web]"
+python -m webapp create-user you@example.com "Your Name" --role admin
+python -m webapp seed-demo          # optional: one invented demo land
+python -m webapp serve              # http://127.0.0.1:8000
+```
+
+Settings come from the environment: `DATABASE_URL` (default SQLite in `./data`),
+`SECRET_KEY` (required with `APP_ENV=production`), `ANTHROPIC_API_KEY` and
+`MARKET_SCAN_MODEL` for the web scan, and `BOOTSTRAP_ADMIN_EMAIL` /
+`BOOTSTRAP_ADMIN_PASSWORD` to create the first admin on an empty database. A
+`Dockerfile` is included.
+
+Do not commit real land data or offers to this repository; it is public.
 
 ## What the engine does
 
@@ -49,7 +90,7 @@ ranges. Each of these re-runs the full engine. None uses a shortcut formula.
 ## Use
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[web,dev]"
 python -m feasibility examples/sample_study.json --residual --risk 500
 pytest -q
 ```
@@ -78,6 +119,9 @@ All inputs are described in `src/feasibility/inputs.py`.
   amount and the same IRR; a higher cost never raises NPV; every input moves a
   result; every land condition refuses a study that breaks it.
 - `tests/test_analysis.py`: sensitivities, risk ranges and the command line.
+- `tests/web/`: the web app: logins and roles, CSRF, lands and conditions, the
+  screener against the engine, studies and analyses, reports, and the market scan
+  (with a fake search client).
 
 ## Conventions worth knowing
 
@@ -99,5 +143,5 @@ All inputs are described in `src/feasibility/inputs.py`.
 ## Not built yet
 
 Unit-by-unit inventory with a sales order, revenue recognised at delivery for
-tax, VAT, debt grace periods and scheduled repayment, the comparison against
-the Excel model, and the web app.
+tax, VAT, debt grace periods and scheduled repayment, site layout and massing,
+and best-use analysis.

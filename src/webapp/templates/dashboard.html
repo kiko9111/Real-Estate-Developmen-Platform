@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "macros.html" import status_badge, verdict_badge with context %}
+{% block title %}Lands{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Lands</h1><div class="muted">Every plot the team is looking at, newest activity first.</div></div>
+  {% if user.can_edit %}<a class="btn" href="/lands/new">+ New land</a>{% endif %}
+</div>
+<form class="actions" method="get" action="/" style="margin-bottom:14px">
+  <input name="q" value="{{ q }}" placeholder="Search name, area, region or code" style="max-width:320px">
+  <select name="status" style="max-width:200px">
+    <option value="" {{ 'selected' if not status }}>All active</option>
+    {% for s, label in STATUS_LABELS.items() %}<option value="{{ s }}" {{ 'selected' if status == s }}>{{ label }} ({{ counts.get(s, 0) }})</option>{% endfor %}
+    <option value="all" {{ 'selected' if status == 'all' }}>Everything, with archived</option>
+  </select>
+  <button class="btn secondary">Filter</button>
+</form>
+<div class="panel" style="padding:0">
+  {% if lands %}
+  <table>
+    <tr><th>Land</th><th>Location</th><th class="num">Area (feddan)</th><th class="num">Asking / feddan</th><th>Last screening</th><th>Studies</th><th>Status</th></tr>
+    {% for l in lands %}
+    {% set s = l.screenings[0] if l.screenings else none %}
+    <tr>
+      <td><a href="/lands/{{ l.id }}"><strong>{{ l.name }}</strong></a>{% if l.code %}<div class="muted small">{{ l.code }}</div>{% endif %}</td>
+      <td>{{ l.area_name or '' }}{% if l.area_name and l.region %}, {% endif %}{{ l.region or '' }}</td>
+      <td class="num">{{ l.area_feddan|num(1) }}</td>
+      <td class="num">{{ l.offer.get('asking_price_per_feddan')|money if l.offer and l.offer.get('asking_price_per_feddan') else '' }}</td>
+      <td>{% if s %}{{ verdict_badge(s.verdict) }} <span class="muted small">{{ s.created_at.strftime('%d %b') }}</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+      <td>{{ l.studies|length }}</td>
+      <td>{{ status_badge(l.status) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div style="padding:28px" class="muted">No lands yet.{% if user.can_edit %} <a href="/lands/new">Add the first one</a>.{% endif %}</div>
+  {% endif %}
+</div>
+{% endblock %}
