@@ -46,6 +46,21 @@ Settings come from the environment: `DATABASE_URL` (default SQLite in `./data`),
 `BOOTSTRAP_ADMIN_PASSWORD` to create the first admin on an empty database. A
 `Dockerfile` is included.
 
+### Put it online for the team
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/kiko9111/Real-Estate-Developmen-Platform)
+
+The button reads `render.yaml`: one always-on web service in Frankfurt with a 1 GB
+disk for the database. Render asks for three values:
+
+- `ANTHROPIC_API_KEY`: turns on the web market scan (create one at console.anthropic.com).
+- `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`: the first admin, created on
+  the first start. Sign in, add the team on the Team page, then change this password.
+
+The app gets an address like `https://development-platform.onrender.com` that anyone
+on the team can open; a custom domain can be added in Render's settings. Each push to
+`main` redeploys it. Keys live only in Render's settings, never in this repository.
+
 Do not commit real land data or offers to this repository; it is public.
 
 ## What the engine does
