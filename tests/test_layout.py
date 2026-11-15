@@ -273,3 +273,25 @@ def test_narrow_plot_still_fills_its_blocks():
         assert o["kpis"]["built_area_m2"] >= 0.6 * grid, name
         empty = [b for b in o["geometry"]["blocks"] if b["use"] not in ("park", "") and not b["b"]]
         assert len(empty) <= 1, (name, [b["use"] for b in empty])
+
+
+def test_master_plan_modules_terraces_sea_front_gate_and_trees():
+    site = make_site(rectangle(600, 1400))
+    L = Limits(coverage=0.2, max_height_m=24)
+    o = _ok(generate(site, default_brief(), L, strategies=["Lagoon resort"])[0])
+    geo = o["geometry"]
+    typ = {i: t["key"] for i, t in enumerate(geo["typologies"])}
+    chalets = [q for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "chalet" for q in b["b"]]
+    straight = [q for q in chalets if q[4] == 0]
+    # terraced rows: long buildings parallel to the sea, no longer than the type allows
+    assert straight and max(q[2] for q in straight) <= 64 + 0.1 and sum(q[2] >= 30 for q in straight) > len(straight) / 2
+    # lagoon-front buildings turned to the water
+    assert any(q[4] != 0 for q in chalets)
+    # the lagoons start behind the first line: nothing but beach, roads and the promenade below it
+    rs = default_brief().strategies[0].resort
+    first_line = 40 + rs.promenade_m + rs.first_line_m
+    assert all(min(p[1] for p in (r[0] if isinstance(r[0][0], list) else r)) > first_line - 1 for r in geo["water"])
+    # sea-front lots in rows
+    villas = [b for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "villa"]
+    assert villas and all(len(b["plots"]) == len(b["b"]) for b in villas)
+    assert geo["gate"] and len(geo["trees"]) > 100

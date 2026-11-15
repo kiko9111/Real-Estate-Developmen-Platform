@@ -63,14 +63,35 @@
       g.appendChild(poly);
     }
     for (const r of geo.green || []) g.appendChild(area(r, {fill: C.park}));
-    for (const r of geo.water || []) g.appendChild(area(r, {fill: C.water, stroke: "#4aa3d0", "stroke-width": 1}));
-    for (const r of geo.roads) g.appendChild(area(r, {fill: C.road}));
+    for (const r of geo.water || []) g.appendChild(area(r, {fill: C.water, stroke: "#3d97c6", "stroke-width": 1.2}));
+    for (const r of geo.roads) g.appendChild(area(r, {fill: C.road, stroke: "#a9aeb4", "stroke-width": 0.6}));
+    // trees in the parks
+    const tg = svgEl("g", {});
+    for (const t of geo.trees || []) {
+      tg.appendChild(svgEl("circle", {cx: t[0] + 1.2, cy: t[1] + 1.2, r: t[2], fill: "rgba(40,70,30,.18)"}));
+      tg.appendChild(svgEl("circle", {cx: t[0], cy: t[1], r: t[2], fill: "#6fae5c", stroke: "#4f8a40", "stroke-width": 0.4}));
+    }
+    g.appendChild(tg);
     for (const b of geo.blocks) {
-      for (const q of b.plots || []) g.appendChild(svgEl("polygon", {points: pts(q), fill: "none", stroke: C.plotline, "stroke-width": 0.6}));
+      for (const q of b.plots || []) g.appendChild(svgEl("polygon", {points: pts(q), fill: "#fbf8f1", stroke: C.plotline, "stroke-width": 0.7}));
+    }
+    // buildings with a shadow to the north-east, longer for taller buildings
+    for (const b of geo.blocks) {
+      if (b.typ === null || b.typ === undefined) continue;
+      for (const q of b.b) {
+        const h = heightOf(q) || 7, o = Math.min(14, h * 0.35);
+        g.appendChild(svgEl("polygon", {points: pts(corners(q).map((p) => [p[0] + o, p[1] + o])), fill: "rgba(30,30,40,.22)"}));
+      }
+    }
+    for (const b of geo.blocks) {
       if (b.typ === null || b.typ === undefined) continue;
       const col = colorOf(b.typ);
       for (const q of b.b) g.appendChild(svgEl("polygon", {points: pts(corners(q)), fill: col,
-                                                            stroke: "rgba(0,0,0,.35)", "stroke-width": 0.4}));
+                                                            stroke: "rgba(0,0,0,.45)", "stroke-width": 0.5}));
+    }
+    if (geo.gate) {
+      const [gx, gy] = geo.gate;
+      g.appendChild(svgEl("rect", {x: gx - 9, y: gy - 3, width: 18, height: 6, fill: "#333"}));
     }
     for (const band of geo.bands || []) {
       if (!band.from) continue;

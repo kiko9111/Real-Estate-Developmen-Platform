@@ -42,6 +42,24 @@ def rect(cx: float, cy: float, w: float, d: float, ang: float = 0.0) -> Polygon:
     return affinity.rotate(r, ang, origin=(cx, cy)) if ang else r
 
 
+def _runs(poly, x0, x1, y0, y1, step=2.0):
+    """Stretches along x where the strip from y0 to y1 lies wholly inside the polygon."""
+    pp = prep(poly)
+    runs, start = [], None
+    x = x0
+    while x <= x1 + 1e-9:
+        ok = pp.contains(box(x, y0, min(x + step, x1 + step), y1)) if x + step <= x1 + 1e-9 else False
+        if ok and start is None:
+            start = x
+        if not ok and start is not None:
+            runs.append((start, x))
+            start = None
+        x += step
+    if start is not None:
+        runs.append((start, x1))
+    return runs
+
+
 def wavy(x0: float, x1: float, y: float, amp: float, wave: float, phase: float = 0.0, vertical: bool = False,
          step: float = 10.0) -> LineString:
     n = max(2, int(abs(x1 - x0) / step) + 1)
@@ -84,11 +102,26 @@ class ResortPlan(Plan):
         spine_l = box(cx - half_g - cw, beach_d, cx - half_g, maxy + 1)
         spine_r = box(cx + half_g, beach_d, cx + half_g + cw, maxy + 1)
         roads += [spine_l, spine_r]
+        self.gate = None
+        gate_green = None
+        if rs.gate_r_m > 0 and back - y_first > 5 * rs.gate_r_m:
+            # the gate: an entrance roundabout where the spine meets the road behind the plot
+            gc = Point(cx, back - rs.gate_r_m - 6)
+            inner_r = max(rs.gate_r_m - rs.collector_m * 0.7, rs.gate_r_m * 0.5)
+            gate_green = gc.buffer(inner_r)
+            beyond = box(minx - 1, gc.y, maxx + 1, maxy + 1)
+            roads[-2:] = [spine_l.difference(gate_green).difference(beyond),
+                          spine_r.difference(gate_green).difference(beyond),
+                          gc.buffer(rs.gate_r_m).difference(gate_green),
+                          box(cx - cw, gc.y, cx + cw, maxy + 1).difference(gate_green)]
+            self.gate = (cx, back - 2)
         greens = []
         if rs.spine_green_m > 0:
             greens.append(box(cx - half_g, y_prom, cx + half_g, back))
         if rs.plaza_r_m > 0:
             greens.append(Point(cx, y_prom + rs.plaza_r_m * 0.8).buffer(rs.plaza_r_m))
+        if gate_green is not None:
+            greens.append(gate_green)
         # lines towards the beach, spread evenly across each half of the plot
         spine_edge = half_g + cw
         half_w = (maxx - minx) / 2 - spine_edge - other
@@ -114,11 +147,15 @@ class ResortPlan(Plan):
         for j, x in enumerate(corridor_x):
             if lagoons:
                 # a lagoon runs inland along the corridor, with green banks, ending in a pool
-                line = wavy(y_prom + 8, lag_end, x, min(rs.lagoon_w_m * 0.45, 25.0), 170, phase=j * 0.7, vertical=True)
+                # it starts behind the first line, so the beach front stays whole for the best products
+                y0 = y_first + rs.collector_m / 2 + 9 + rs.lagoon_w_m * 0.6
+                line = wavy(y0, lag_end, x, min(rs.lagoon_w_m * 0.45, 25.0), 170, phase=j * 0.7, vertical=True)
                 water_parts.append(line.buffer(rs.lagoon_w_m / 2))
                 water_parts.append(Point(line.coords[-1]).buffer(rs.lagoon_w_m * 0.95))
+                water_parts.append(Point(line.coords[0]).buffer(rs.lagoon_w_m * 0.6))
                 greens.append(line.buffer(rs.lagoon_w_m / 2 + 9))
                 greens.append(Point(line.coords[-1]).buffer(rs.lagoon_w_m * 0.95 + 9))
+                greens.append(Point(line.coords[0]).buffer(rs.lagoon_w_m * 0.6 + 9))
                 start = lag_end + rs.lagoon_w_m
             else:
                 start = y_prom
@@ -187,6 +224,16 @@ class ResortPlan(Plan):
             got += b.area * scale
             if serv_min == 0:
                 break               # one hub block for shops and a clubhouse even without a rule
+        rs = self.strategy.resort
+        if rs.beach_club:
+            # a beach club on the first line, on the smallest block beside the plaza
+            cx = (self.site.polygon.bounds[0] + self.site.polygon.bounds[2]) / 2
+            front = [b for b in self.blocks if b.kind == "front" and not b.use and b.area <= 15_000]
+            near = sorted(front, key=lambda b: (abs(b.poly.centroid.x - cx) > rs.spine_green_m + rs.boulevard_m + 80,
+                                                b.area))
+            if near:
+                near[0].use = "services"
+                near[0].kind = "club"
         super().reserve()
 
     # ------------------------------------------------------------ building on a block
@@ -200,15 +247,134 @@ class ResortPlan(Plan):
         if floors <= 0:
             return
         if t.kind in ("detached", "row"):
+            if b.kind == "front" and self._sea_rows(b, t, floors):
+                return
             if not self._cluster(b, t, floors):
                 super().fill(b)
         elif t.kind == "block":
-            self._staggered(b, t, floors)
+            if not (t.max_length_m and self._terraces(b, t, floors)):
+                self._staggered(b, t, floors)
         elif t.category == "hotel":
             if not self._hotel(b, t, floors):
                 super().fill(b)
         else:
             super().fill(b)
+
+    def _sea_rows(self, b: Block, t, floors) -> bool:
+        """Sea-front lots in rows facing the beach: the first row on the promenade road, a second row
+        behind it on a lane, each house at the sea side of its lot with the garden in front."""
+        rs = self.strategy.resort
+        pw, pd = t.plot_w_m, t.plot_d_m
+        fw, fd = t.footprint_w_m, t.footprint_d_m
+        minx, miny, maxx, maxy = b.poly.bounds
+        pb = prep(b.poly.buffer(0.3))
+        rows = [miny]
+        lane = None
+        if maxy - miny >= 2 * pd + rs.second_row_lane_m:
+            y_lane = miny + pd
+            lane = box(minx - 1, y_lane, maxx + 1, y_lane + rs.second_row_lane_m).intersection(b.poly)
+            rows.append(y_lane + rs.second_row_lane_m)
+        plots, houses = [], []
+        front_garden = max(3.0, min(8.0, (pd - fd) * 0.6))
+        for k, y0 in enumerate(rows):
+            n = int((maxx - minx) // pw)
+            ox = minx + ((maxx - minx) - n * pw) / 2 + (pw / 2 if k % 2 and n > 1 else 0.0)
+            for i in range(n):
+                x0 = ox + i * pw
+                q = box(x0, y0, x0 + pw, y0 + pd)
+                if not pb.contains(q):
+                    continue
+                plots.append(q)
+                houses.append([x0 + pw / 2, y0 + front_garden + fd / 2, fw, fd, 0.0, floors])
+        if len(houses) < 2:
+            return False
+        b.plots = [list(q.exterior.coords)[:-1] for q in plots]
+        b.buildings = houses
+        if lane is not None and not lane.is_empty:
+            b.road_poly = lane
+        return True
+
+    def _terraces(self, b: Block, t, floors) -> bool:
+        """Terraced rows parallel to the beach, broken into buildings of up to the type's length with
+        passages between, the rows far enough apart for the back rows to see over the front ones."""
+        rs = self.strategy.resort
+        area = b.poly.buffer(-rs.block_margin_m, join_style=2)
+        if area.is_empty:
+            return False
+        fd = t.footprint_d_m
+        height = floors * t.floor_height_m
+        spacing = fd + max(t.gap_m, self.limits.between_buildings_m or 0.0, 0.8 * height)
+        passage = max(8.0, self.limits.between_buildings_m or 0.0)
+        min_len = min(t.footprint_w_m, t.max_length_m) * 0.5
+        minx, miny, maxx, maxy = area.bounds
+        pa = prep(area)
+        # lagoon front: a row of buildings along the edge facing the water
+        out, taken = [], []
+        if not self.water.is_empty and b.poly.distance(self.water) < 25:
+            near = self.water.buffer(b.poly.distance(self.water) + 16)
+            edge = b.poly.exterior.intersection(near)
+            if edge.geom_type == "MultiLineString":
+                from shapely.ops import linemerge
+                edge = linemerge(edge)
+            for line in [g for g in getattr(edge, "geoms", [edge]) if g.geom_type == "LineString"]:
+                L = line.length
+                if L < min_len:
+                    continue
+                # shorter buildings follow the curve of the bank
+                n = max(1, math.ceil((L + passage) / (min(t.max_length_m, 34.0) + passage)))
+                seg = (L - (n - 1) * passage) / n
+                for i in range(n):
+                    a = line.interpolate(i * (seg + passage))
+                    c = line.interpolate(i * (seg + passage) + seg)
+                    dx, dy = c.x - a.x, c.y - a.y
+                    ln = math.hypot(dx, dy)
+                    if ln < min_len:
+                        continue
+                    nx, ny = -dy / ln, dx / ln
+                    mx, my = (a.x + c.x) / 2, (a.y + c.y) / 2
+                    from shapely.ops import substring
+                    chunk = substring(line, i * (seg + passage), i * (seg + passage) + seg)
+                    chord = LineString([(a.x, a.y), (c.x, c.y)])
+                    sag = max((Point(q).distance(chord) for q in chunk.coords), default=0.0)
+                    off = rs.block_margin_m + fd / 2 + 0.5 + sag
+                    if not b.poly.contains(Point(mx + nx * off, my + ny * off)):
+                        nx, ny = -nx, -ny
+                    ang = math.degrees(math.atan2(dy, dx))
+                    for k_ in (1.0, 0.85, 0.7):
+                        w = ln * k_ - 2
+                        r = rect(mx + nx * off, my + ny * off, w, fd, ang)
+                        if w >= min_len and pa.contains(r) and not any(r.intersects(o) for o in taken):
+                            out.append([mx + nx * off, my + ny * off, w, fd, ang, floors])
+                            taken.append(r.buffer(max(t.gap_m, self.limits.between_buildings_m or 0.0) * 0.8))
+                            break
+        y = miny + fd / 2
+        k = 0
+        while y + fd / 2 <= maxy + 1e-6:
+            band = area.intersection(box(minx - 1, y - fd / 2, maxx + 1, y + fd / 2))
+            for part in _polys(band):
+                # the stretches of the band where the whole depth of the row fits
+                x0, _, x1, _ = part.bounds
+                for s0, s1 in _runs(area, x0, x1, y - fd / 2, y + fd / 2):
+                    L = s1 - s0
+                    if L < min_len:
+                        continue
+                    n = max(1, math.ceil((L + passage) / (t.max_length_m + passage))) + (k % 2)
+                    seg = (L - (n - 1) * passage) / n
+                    if seg < min_len:
+                        n = max(1, int((L + passage) // (min_len + passage)))
+                        seg = (L - (n - 1) * passage) / n
+                    for i in range(n):
+                        cxs = s0 + seg / 2 + i * (seg + passage)
+                        r = rect(cxs, y, seg, fd)
+                        if taken and any(r.intersects(o) for o in taken):
+                            continue
+                        out.append([cxs, y, seg, fd, 0.0, floors])
+            y += spacing
+            k += 1
+        if not out:
+            return False
+        b.buildings = out
+        return True
 
     def _staggered(self, b: Block, t, floors):
         rs = self.strategy.resort

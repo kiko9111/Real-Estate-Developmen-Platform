@@ -27,7 +27,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.geometry import MultiPolygon, Point, Polygon, box
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -91,6 +91,7 @@ class Plan:
         self.beach = Polygon()
         self.water = Polygon()
         self.green = Polygon()      # parks that are part of the plan's structure (spine, corridors, plaza)
+        self.gate = None            # where the entrance gate is, if the plan has one
         self.bands = self._bands()
 
     # ------------------------------------------------------------ areas
@@ -578,6 +579,7 @@ class Plan:
                                   round(f * (t.floor_height_m if t else 3.5), 1)] for x, y, w, d, a, f in b.buildings]})
         inner_roads = [b.road_poly for b in self.blocks if b.road_poly is not None]
         greens = [self.green] + [b.green_poly for b in self.blocks if b.green_poly is not None]
+        parks = greens + [b.poly for b in self.blocks if b.use == "park"]
         return {
             "site": _ring(self.site.polygon),
             "roads": [_rings(g) for g in _polys(unary_union([self.roads] + inner_roads))],
@@ -590,6 +592,9 @@ class Plan:
             "typologies": [{"key": t.key, "name": t.name, "category": t.category, "kind": t.kind}
                            for t in self.brief.typologies],
             "bands": [{"name": b.name, "from": b.from_depth_m, "to": b.to_depth_m} for b in self.bands],
+            "trees": _trees(unary_union(parks)),
+            "gate": [round(v, 1) for v in self.gate] if self.gate else None,
+            "clubs": [b.id for b in self.blocks if b.kind == "club"],
         }
 
 
@@ -766,6 +771,36 @@ def apply_edits(p: Plan, edits: dict) -> None:
 
 
 # ---------------------------------------------------------------- helpers
+
+def _trees(g, spacing: float = 14.0, cap: int = 6000) -> list:
+    """Tree positions for the drawing: a loose staggered grid over the parks, a little uneven."""
+    if g.is_empty:
+        return []
+    area = g.area
+    if area / (spacing * spacing) > cap:
+        spacing = math.sqrt(area / cap)
+    inner = g.buffer(-2.5)
+    if inner.is_empty:
+        return []
+    pg = prep(inner)
+    minx, miny, maxx, maxy = inner.bounds
+    out, j = [], 0
+    y = miny + spacing / 2
+    while y < maxy:
+        x = minx + (spacing / 2 if j % 2 else 0.0) + spacing / 4
+        i = 0
+        while x < maxx:
+            # a fixed jitter, so the drawing is the same each time
+            h = math.sin(i * 12.9898 + j * 78.233) * 43758.5453
+            jx, jy = (h - math.floor(h) - 0.5) * spacing * 0.5, (math.sin(h) * 0.5) * spacing * 0.4
+            if pg.contains(Point(x + jx, y + jy)):
+                out.append([round(x + jx, 1), round(y + jy, 1), round(2.6 + (h - math.floor(h)) * 2.0, 1)])
+            x += spacing
+            i += 1
+        y += spacing * 0.87
+        j += 1
+    return out
+
 
 def _thin(b: Block, s: float):
     n = len(b.buildings)
