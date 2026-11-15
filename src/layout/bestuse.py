@@ -110,7 +110,7 @@ def option_study(option: dict, brief: LayoutBrief, base: dict, name: Optional[st
 
 
 def _uplift(brief: LayoutBrief, name: str) -> float:
-    return next(p.uplift for p in brief.depth_premiums if p.name == name)
+    return next(p.uplift for p in list(brief.depth_premiums) + list(brief.view_premiums) if p.name == name)
 
 
 KEEP = ("revenue", "development_cost", "land_cost", "profit_pre_tax", "margin_on_revenue", "npv_pre_tax",

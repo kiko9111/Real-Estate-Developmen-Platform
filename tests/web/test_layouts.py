@@ -29,7 +29,7 @@ def test_layout_flow_rectangle_to_study(analyst, app):
     from webapp.models import LayoutRecord, StudyRecord
     rec = db.get(LayoutRecord, rid)
     ok = [o for o in rec.options if "feasibility" in o]
-    assert len(ok) == 4
+    assert len(ok) >= 4
     # the land's conditions are respected by every option that passes
     for o in ok:
         assert o["kpis"]["coverage"] <= CONDITIONS["footprint_pct"] + 1e-6

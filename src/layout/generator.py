@@ -47,11 +47,28 @@ class Block:
     id: int
     poly: Polygon
     use: str = ""                    # "park", "services", or a typology key
-    buildings: list = field(default_factory=list)   # [x, y, w, d, floors]
+    buildings: list = field(default_factory=list)   # [cx, cy, w, d, angle_deg, floors]
+    plots: list = field(default_factory=list)       # plot outlines for houses, [[x, y], ...]
+    kind: str = ""                                  # what the block is in the plan: superblock, front, ...
+    road_poly: Optional[Polygon] = None             # a loop road inside the block (house clusters)
+    green_poly: Optional[Polygon] = None            # a pocket park inside the block
 
     @property
     def area(self) -> float:
         return self.poly.area
+
+    @property
+    def road_area(self) -> float:
+        return self.road_poly.area if self.road_poly is not None else 0.0
+
+    @property
+    def green_area(self) -> float:
+        return self.green_poly.area if self.green_poly is not None else 0.0
+
+    @property
+    def net_area(self) -> float:
+        """The block less its inner road and pocket park: the plots themselves."""
+        return self.area - self.road_area - self.green_area
 
     @property
     def depth(self) -> float:
@@ -69,7 +86,22 @@ class Plan:
         self.roads = Polygon()
         self.setbacks = Polygon()
         self.leftover = Polygon()
+        self.beach = Polygon()
+        self.water = Polygon()
+        self.green = Polygon()      # parks that are part of the plan's structure (spine, corridors, plaza)
         self.bands = self._bands()
+
+    # ------------------------------------------------------------ areas
+
+    def fixed_open(self) -> float:
+        return self.setbacks.area + self.leftover.area + self.beach.area + self.water.area + self.green.area
+
+    def roads_area(self) -> float:
+        return self.roads.area + sum(b.road_area for b in self.blocks)
+
+    def open_area(self) -> float:
+        return (self.fixed_open() + sum(b.area for b in self.blocks if b.use == "park")
+                + sum(b.green_area for b in self.blocks if b.use != "park"))
 
     # ------------------------------------------------------------ height
 
@@ -165,7 +197,7 @@ class Plan:
         scale = land / self.site.area_m2       # shares are of the legal land area
         open_min = max(L.open_space_share or 0.0, self._land_min("open space")) + self.strategy.extra_open_space_share
         serv_min = max(L.services_share or 0.0, self._land_min("services"))
-        have_open = (self.setbacks.area + self.leftover.area) * scale
+        have_open = self.fixed_open() * scale
         minx, miny, maxx, maxy = self.site.polygon.bounds
         cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
         free = list(self.blocks)
@@ -221,7 +253,7 @@ class Plan:
     # ------------------------------------------------------------ step 6
 
     def fill(self, b: Block):
-        b.buildings = []
+        b.buildings, b.plots, b.road_poly, b.green_poly = [], [], None, None
         if b.use == "park":
             return
         key = self.brief.services_typology if b.use == "services" else b.use
@@ -238,11 +270,11 @@ class Plan:
             w0, d0 = maxx - minx, maxy - miny
             k = math.sqrt(t.block_cover)
             c = b.poly.centroid
-            for _ in range(12):
+            for _ in range(6):            # give up rather than draw a token building
                 w, d = w0 * k, d0 * k
                 r = box(c.x - w / 2, c.y - d / 2, c.x + w / 2, c.y + d / 2)
                 if pb.contains(r):
-                    b.buildings.append([c.x - w / 2, c.y - d / 2, w, d, floors])
+                    b.buildings.append([c.x, c.y, w, d, 0.0, floors])
                     return
                 k *= 0.88
             return
@@ -260,12 +292,12 @@ class Plan:
                 x0, y0 = ox + i * cw, oy + j * cd
                 if not pb.contains(box(x0, y0, x0 + cw, y0 + cd)):
                     continue
-                b.buildings.append([x0 + (cw - fw) / 2, y0 + (cd - fd) / 2, fw, fd, floors])
+                b.buildings.append([x0 + cw / 2, y0 + cd / 2, fw, fd, 0.0, floors])
         if not b.buildings and t.kind == "block":
             c = b.poly.centroid
             r = box(c.x - fw / 2, c.y - fd / 2, c.x + fw / 2, c.y + fd / 2)
             if pb.contains(r):
-                b.buildings.append([c.x - fw / 2, c.y - fd / 2, fw, fd, floors])
+                b.buildings.append([c.x, c.y, fw, fd, 0.0, floors])
 
     def fill_all(self):
         for b in self.blocks:
@@ -287,8 +319,8 @@ class Plan:
                 continue
             r = by_t.setdefault(t.key, {"buildings": 0, "footprint": 0.0, "bua": 0.0, "plots": 0.0, "units": 0.0,
                                         "floors_max": 0, "floors_min": 99})
-            r["plots"] += b.area
-            for x, y, w, d, f in b.buildings:
+            r["plots"] += b.net_area
+            for x, y, w, d, a, f in b.buildings:
                 r["buildings"] += 1
                 r["footprint"] += w * d
                 r["bua"] += w * d * f
@@ -314,13 +346,13 @@ class Plan:
     def share(self, use: str, basis: str, by_t: dict) -> float:
         if basis == "land":
             if _same_use(use, "roads"):
-                a = self.roads.area
+                a = self.roads_area()
             elif _same_use(use, "open space"):
-                a = self.setbacks.area + self.leftover.area + sum(b.area for b in self.blocks if b.use == "park")
+                a = self.open_area()
             elif _same_use(use, "services"):
-                a = sum(b.area for b in self.blocks if b.use == "services")
+                a = sum(b.net_area for b in self.blocks if b.use == "services")
             else:
-                a = sum(b.area for b in self.blocks if b.use not in ("park", "services", "")
+                a = sum(b.net_area for b in self.blocks if b.use not in ("park", "services", "")
                         and _matches(self.brief.typology(b.use), use))
             return a / self.site.area_m2
         key = "bua" if basis == "built_area" else "units"
@@ -352,7 +384,7 @@ class Plan:
             r, side = bad
             if side == "min":
                 cands = [t for t in self.brief.typologies if _matches(t, r.use)]
-                cands.sort(key=lambda t: (t.key not in strategy_keys, t.key))
+                cands.sort(key=self._preference(strategy_keys))
                 donors = [b for b in self.blocks if b.use not in ("park", "services", "")
                           and not _matches(self.brief.typology(b.use), r.use)
                           and not self._would_break_min(b, rules, by_t)]
@@ -362,21 +394,24 @@ class Plan:
                                       f"Could not reach the minimum {r.use} share of {r.basis.replace('_', ' ')}.")
                     return
                 new = cands[0].key
-                # take land from the back for hotels on the frontage strategy-wise: use the median-sized donor
-                donors.sort(key=lambda b: b.area)
-                b = donors[len(donors) // 2]
             else:
                 donors = [b for b in self.blocks if b.use not in ("park", "services", "")
                           and _matches(self.brief.typology(b.use), r.use)]
                 if not donors:
                     return
-                donors.sort(key=lambda b: b.area)
-                b = donors[len(donors) // 2]
-                alts = [k for k in strategy_keys if not _matches(self.brief.typology(k), r.use)]
-                new = sorted(alts)[0] if alts else "park"
+                alts = [t for t in self.brief.typologies if t.key in strategy_keys and not _matches(t, r.use)]
+                alts.sort(key=self._preference(strategy_keys))
+                new = alts[0].key if alts else "park"
+            # give up the least valuable land first: cheapest type, then the block furthest from the frontage
+            donors.sort(key=lambda b: (self.brief.typology(b.use).price_per_m2 or 0.0, -b.depth))
+            b = donors[0]
             b.use = new
             self.fill(b)
         self.notes.append("Stopped adjusting the mix after 400 changes; check the share rules.")
+
+    def _preference(self, strategy_keys):
+        """Types the strategy uses first, then types for sale, then the highest price."""
+        return lambda t: (t.key not in strategy_keys, t.mode != "sell", -(t.price_per_m2 or 0.0), t.key)
 
     def _would_break_min(self, b: Block, rules, by_t) -> bool:
         t = self.brief.typology(b.use)
@@ -418,6 +453,8 @@ class Plan:
         L = self.limits
         products = []
         for k, r in sorted(by_t.items(), key=lambda kv: -kv[1]["bua"]):
+            if r["bua"] <= 0:
+                continue
             t = self.brief.typology(k)
             products.append({"key": k, "name": t.name, "category": t.category, "mode": t.mode,
                              "buildings": r["buildings"], "units": r["units"], "plots_m2": r["plots"],
@@ -428,13 +465,17 @@ class Plan:
         for p in products:
             p["share_of_built_area"] = p["built_area_m2"] / bua
         use = [
-            ("Roads", self.roads.area),
+            ("Roads", self.roads_area()),
+            ("Beach", self.beach.area),
+            ("Lagoons and water", self.water.area),
+            ("Parks, green spine and view corridors", self.green.area + sum(b.area for b in self.blocks if b.use == "park")
+             + sum(b.green_area for b in self.blocks if b.use != "park")),
             ("Setbacks and landscape strips", self.setbacks.area + self.leftover.area),
-            ("Parks and open space", sum(b.area for b in self.blocks if b.use == "park")),
-            ("Services plots", sum(b.area for b in self.blocks if b.use == "services")),
+            ("Services plots", sum(b.net_area for b in self.blocks if b.use == "services")),
         ]
+        use = [u for u in use if u[1] > 0.5 or u[0] == "Roads"]
         for t in self.brief.typologies:
-            a = sum(b.area for b in self.blocks if b.use == t.key)
+            a = sum(b.net_area for b in self.blocks if b.use == t.key)
             if a > 0:
                 use.append((f"{t.name} plots", a))
         land_use = [{"use": u, "area_m2": a, "share": a / site_area} for u, a in use]
@@ -446,7 +487,7 @@ class Plan:
             "units": tot["units"], "units_per_feddan": tot["units"] / feddan,
             "persons": tot["persons"], "persons_per_feddan": tot["persons"] / feddan,
             "sellable_m2": sum(p["sellable_m2"] for p in products),
-            "roads_share": self.roads.area / site_area,
+            "roads_share": self.roads_area() / site_area,
             "open_space_share": self.share("open space", "land", by_t),
             "services_share": self.share("services", "land", by_t),
             "buildings": sum(p["buildings"] for p in products),
@@ -464,24 +505,45 @@ class Plan:
         }
 
     def premium_shares(self) -> dict:
-        """Per building type: the share of its units in each frontage premium band."""
-        prem = sorted(self.brief.depth_premiums, key=lambda p: p.within_m)
+        """Per building type: the share of its units carrying each view premium.
+
+        A unit carries at most one premium: the largest that applies to its
+        building (frontage distance, or distance to water or a park).
+        """
+        rules = [(p.name, "frontage", p.within_m, p.uplift) for p in self.brief.depth_premiums]
+        rules += [(p.name, p.feature, p.within_m, p.uplift) for p in self.brief.view_premiums]
         out: dict[str, dict[str, float]] = {}
-        if not prem:
+        if not rules:
             return out
+        from shapely.geometry import Point
+        water = self.water if not self.water.is_empty else None
+        parks = unary_union([self.green] + [b.poly for b in self.blocks if b.use == "park"]
+                            + [b.green_poly for b in self.blocks if b.green_poly is not None])
+        parks = None if parks.is_empty else parks
         tot: dict[str, float] = {}
         for b in self.blocks:
             t = self.typ_of(b)
             if t is None:
                 continue
-            for x, y, w, d, f in b.buildings:
+            for x, y, w, d, a, f in b.buildings:
                 weight = w * d * f
                 tot[t.key] = tot.get(t.key, 0.0) + weight
-                depth = max(0.0, y)
-                band = next((p for p in prem if depth < p.within_m), None)
-                if band is not None:
+                reach = max(w, d) / 2
+                best = None
+                for name, feature, within, uplift in rules:
+                    if feature == "frontage":
+                        dist = max(0.0, y - reach)
+                    elif feature == "water" and water is not None:
+                        dist = water.distance(Point(x, y)) - reach
+                    elif feature == "park" and parks is not None:
+                        dist = parks.distance(Point(x, y)) - reach
+                    else:
+                        continue
+                    if dist < within and (best is None or uplift > best[1]):
+                        best = (name, uplift)
+                if best is not None:
                     o = out.setdefault(t.key, {})
-                    o[band.name] = o.get(band.name, 0.0) + weight
+                    o[best[0]] = o.get(best[0], 0.0) + weight
         return {k: {n: v / tot[k] for n, v in d.items()} for k, d in out.items() if tot.get(k)}
 
     def depth_order(self) -> list[dict]:
@@ -492,7 +554,7 @@ class Plan:
             if t is None or not b.buildings:
                 continue
             rows.append({"key": t.key, "depth": round(b.depth, 1),
-                         "bua": sum(w * d * f for x, y, w, d, f in b.buildings)})
+                         "bua": sum(w * d * f for x, y, w, d, a, f in b.buildings)})
         return rows
 
     def geometry(self) -> dict:
@@ -502,12 +564,18 @@ class Plan:
             t = self.typ_of(b)
             blocks.append({"use": b.use or "", "typ": typ_index[t.key] if t else None,
                            "ring": _ring(b.poly),
-                           "b": [[round(x, 1), round(y, 1), round(w, 1), round(d, 1), f,
-                                  round(f * (t.floor_height_m if t else 3.5), 1)] for x, y, w, d, f in b.buildings]})
+                           "plots": [[[round(x, 1), round(y, 1)] for x, y in q] for q in b.plots],
+                           "b": [[round(x, 1), round(y, 1), round(w, 1), round(d, 1), round(a, 1), f,
+                                  round(f * (t.floor_height_m if t else 3.5), 1)] for x, y, w, d, a, f in b.buildings]})
+        inner_roads = [b.road_poly for b in self.blocks if b.road_poly is not None]
+        greens = [self.green] + [b.green_poly for b in self.blocks if b.green_poly is not None]
         return {
             "site": _ring(self.site.polygon),
-            "roads": [_ring(g) for g in _polys(self.roads)],
-            "landscape": [_ring(g) for g in _polys(unary_union([self.setbacks, self.leftover]))],
+            "roads": [_rings(g) for g in _polys(unary_union([self.roads] + inner_roads))],
+            "landscape": [_rings(g) for g in _polys(unary_union([self.setbacks, self.leftover]))],
+            "beach": [_rings(g) for g in _polys(self.beach)],
+            "water": [_rings(g) for g in _polys(self.water)],
+            "green": [_rings(g) for g in _polys(unary_union(greens))],
             "blocks": blocks,
             "bounds": [round(v, 1) for v in self.site.polygon.bounds],
             "typologies": [{"key": t.key, "name": t.name, "category": t.category, "kind": t.kind}
@@ -621,7 +689,8 @@ def generate(site: Site, brief: LayoutBrief, limits: Limits, land_area_m2: Optio
         if strategies and s.name not in strategies:
             continue
         try:
-            p = Plan(site, brief, s, limits, land)
+            from .resort import ResortPlan
+            p = (ResortPlan if s.pattern == "resort" else Plan)(site, brief, s, limits, land)
             p.cut()
             p.reserve()
             p.assign()
@@ -645,10 +714,9 @@ def _thin(b: Block, s: float):
     if n == 0:
         return
     if n == 1:
-        x, y, w, d, f = b.buildings[0]
+        cx, cy, w, d, a, f = b.buildings[0]
         k = math.sqrt(max(s, 0.0))
-        cx, cy = x + w / 2, y + d / 2
-        b.buildings = [[cx - w * k / 2, cy - d * k / 2, w * k, d * k, f]]
+        b.buildings = [[cx, cy, w * k, d * k, a, f]]
         return
     keep = int(math.floor(n * s + 1e-9))
     if keep >= n:
@@ -684,6 +752,11 @@ def _polys(g) -> list[Polygon]:
     if isinstance(g, MultiPolygon):
         return list(g.geoms)
     return [x for x in getattr(g, "geoms", []) if isinstance(x, Polygon) and not x.is_empty]
+
+
+def _rings(p: Polygon) -> list:
+    """The outline and its holes, for drawing with the even-odd rule."""
+    return [_ring(p)] + [[[round(x, 1), round(y, 1)] for x, y in r.coords[:-1]] for r in p.interiors]
 
 
 def _ring(p: Polygon) -> list:

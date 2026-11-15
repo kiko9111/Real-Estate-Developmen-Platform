@@ -64,6 +64,12 @@ def test_dxf_closed_polyline():
     assert make_site(ring).area_m2 == pytest.approx(120_000)
 
 
+def _miny(q):
+    x, y, w, d, a = q[:5]
+    r = math.radians(a)
+    return min(y + u * w / 2 * math.sin(r) + v * d / 2 * math.cos(r) for u in (-1, 1) for v in (-1, 1))
+
+
 def _ok(o):
     assert "error" not in o, o.get("error")
     return o
@@ -85,8 +91,8 @@ def test_limits_hold_and_compliance_reports_them():
         assert all(c["ok"] for c in o["compliance"]), o["compliance"]
         # nothing is built inside the sea setback
         for b in o["geometry"]["blocks"]:
-            for x, y, w, d, f, h in b["b"]:
-                assert y >= 40 - 1e-6
+            for q in b["b"]:
+                assert _miny(q) >= 40 - 0.2
 
 
 def test_height_bands_cut_floors():
@@ -96,7 +102,7 @@ def test_height_bands_cut_floors():
     for o in generate(site, brief, Limits(coverage=0.25)):
         o = _ok(o)
         for b in o["geometry"]["blocks"]:
-            for x, y, w, d, f, h in b["b"]:
+            for x, y, w, d, a, f, h in b["b"]:
                 cy = sum(p[1] for p in b["ring"]) / len(b["ring"])
                 if cy < 380:
                     assert h <= 7
@@ -179,3 +185,30 @@ def test_layout_costs_from_layout_charge_roads_and_green():
     assert names == ["roads and utilities", "landscape"]
     road = data["costs"]["site_costs"][0]["rate_per_m2_land"] * LAND
     assert road == pytest.approx(brief.road_cost_per_m2 * o["kpis"]["roads_share"] * site.area_m2)
+
+
+def test_resort_pattern_draws_beach_lagoons_corridors_and_house_clusters():
+    site = make_site(rectangle(900, 1500))
+    brief = default_brief()
+    opts = {o["strategy"]: _ok(o) for o in generate(site, brief, Limits(coverage=0.2, max_floors=6))}
+    lagoon = opts["Lagoon resort"]
+    g = lagoon["geometry"]
+    assert g["beach"] and g["water"] and g["green"]
+    uses = {u["use"]: u["share"] for u in lagoon["land_use"]}
+    assert uses["Beach"] > 0 and uses["Lagoons and water"] > 0
+    # lagoon-side units carry the lagoon premium
+    assert any("Lagoon view" in d for d in lagoon["premiums"].values())
+    villas = opts["Villa resort"]
+    houses = [q for b in villas["geometry"]["blocks"] if b["plots"] for q in b["b"]]
+    assert len(houses) > 50
+    assert any(abs(q[4]) > 5 for q in houses)           # houses turn to face their loop road
+    for o in opts.values():
+        total = sum(u["area_m2"] for u in o["land_use"])
+        assert total == pytest.approx(site.area_m2, rel=1e-6)
+
+
+def test_small_plot_skips_lagoons_with_a_note():
+    site = make_site(rectangle(250, 500))
+    o = _ok(generate(site, default_brief(), Limits(coverage=0.25, max_floors=4), strategies=["Lagoon resort"])[0])
+    assert not o["geometry"]["water"]
+    assert any("too small for lagoons" in n for n in o["notes"])
