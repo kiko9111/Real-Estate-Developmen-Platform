@@ -141,7 +141,12 @@ def test_team_edits_a_plan_and_rerun_keeps_it(analyst, viewer, app):
 
 
 def test_architects_master_plan_import(analyst, viewer, app):
-    from tests.test_masterplan import drawing  # noqa: E402
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("mp_drawing", Path(__file__).parent.parent / "test_masterplan.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    drawing = mod.drawing
     lid = make_land(analyst)
     rid = _layout(analyst, lid)
     assert analyst.get(f"/layouts/{rid}/masterplan").status_code == 200
