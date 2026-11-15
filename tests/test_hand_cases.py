@@ -214,10 +214,9 @@ def test_19_land_instalments_with_interest():
     r = run(study(simple(land=land)))
     assert nonzero(r.lines["land_cash"]) == {1: approx(-500_000), 13: approx(-500_000),
                                              25: approx(-500_000), 37: approx(-500_000)}
-    i_m = 1.10 ** (1 / 12) - 1          # monthly rate; 12 months accrue without compounding
-    assert nonzero(r.lines["land_interest"]) == {13: approx(-1_500_000 * i_m * 12),
-                                                 25: approx(-1_000_000 * i_m * 12),
-                                                 37: approx(-500_000 * i_m * 12)}
+    # A year on the unpaid balance costs exactly 10% of it.
+    assert nonzero(r.lines["land_interest"]) == {13: approx(-150_000), 25: approx(-100_000),
+                                                 37: approx(-50_000)}
 
 
 def test_20_land_foreign_currency_tranche():

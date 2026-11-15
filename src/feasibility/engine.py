@@ -333,7 +333,7 @@ def _land_cash(study: Study, led: Ledger) -> None:
     first = cash.first_instalment_after_months or cash.instalment_every_months
     due = first + cash.instalment_every_months * np.arange(cash.instalment_count)
     principal = (price - down) / cash.instalment_count
-    i_m = (1 + cash.interest_annual) ** (1 / 12.0) - 1
+    i_m = cash.interest_annual / 12.0   # simple interest: a full year on the balance costs exactly the annual rate
     balance, last = price - down, 0
     for d in due:
         d = int(d)
