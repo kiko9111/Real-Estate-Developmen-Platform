@@ -43,6 +43,18 @@ This repository holds three parts:
   the decree logic is only this check, never an input. Every option runs through the
   engine with a base study's land deal, timing, plans and costs, and options are ranked
   by NPV, IRR and margin; the best one becomes a full study in one click.
+  The team can edit any option on the plan: click a block, change what it holds (any
+  building type, a park or a services plot) or cap its floors, and apply. The option is
+  laid out again with those blocks locked, checked against the conditions, run through
+  the engine and ranked as "<strategy> (edited)" beside the original. Height limits still
+  win over an edit, and edits are kept when the layout is run again.
+  An architect's master plan can be imported as DXF: closed polylines on layers (boundary,
+  roads, parks, water, beach, services, one layer per product, and optional building
+  footprints with floors in the layer name, such as `BLDG G+2`). The app guesses what each
+  layer is from its name; the team checks it and picks the frontage edge. The plan is
+  measured as drawn (nothing moved or thinned), setbacks and distances between buildings
+  are measured, plots without footprints are filled from the building library, and the
+  plan is ranked with the generated options.
 
 ### Run it
 

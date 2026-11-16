@@ -44,6 +44,14 @@ class DepthPremium(_M):
     uplift: float = Field(gt=-1)
 
 
+class ViewPremium(_M):
+    """A price uplift for units whose building lies within a distance of a lagoon or a park."""
+    name: str
+    feature: Literal["water", "park"]
+    within_m: float = Field(gt=0)
+    uplift: float = Field(gt=-1)
+
+
 Kind = Literal["detached", "row", "block", "landmark"]
 Category = Literal["residential", "serviced", "hotel", "commercial"]
 
@@ -53,7 +61,8 @@ class Typology(_M):
 
     detached  one building on its own plot (villa, twin house)
     row       a row of attached houses on a plot strip (townhouses)
-    block     repeated apartment buildings with a gap between them
+    block     repeated apartment buildings with a gap between them; with a maximum length, terraced
+              rows parallel to the frontage, broken into buildings of up to that length
     landmark  one large building per block covering a share of it (hotel, mall)
     """
     key: str = Field(min_length=1, max_length=40)
@@ -68,6 +77,7 @@ class Typology(_M):
     plot_w_m: Optional[float] = Field(default=None, gt=0)   # detached and row: plot size
     plot_d_m: Optional[float] = Field(default=None, gt=0)
     gap_m: float = Field(default=12, ge=0)           # block: between buildings
+    max_length_m: Optional[float] = Field(default=None, gt=0)   # block: build terraced rows up to this long
     block_cover: float = Field(default=0.35, gt=0, le=0.9)   # landmark: share of its block built on
     units_per_building: Optional[int] = Field(default=None, gt=0)   # blank = from the unit size
     unit_size_m2: float = Field(default=120, gt=0)   # sellable m2 per unit
@@ -102,9 +112,47 @@ class StrategyZone(_M):
     mix: dict[str, float]                       # typology key -> weight
 
 
+class ResortSettings(_M):
+    """How a resort-pattern plan is drawn. Distances in metres."""
+    beach_m: float = Field(default=40, ge=0)            # beach band; at least the frontage setback
+    promenade_m: float = Field(default=14, ge=0)        # beach road and walk behind the beach
+    first_line_m: float = Field(default=88, gt=10)      # depth of the first line of plots
+    boulevard_m: float = Field(default=24, gt=0)        # both carriageways of the main spine together
+    spine_green_m: float = Field(default=30, ge=0)      # park in the middle of the spine
+    plaza_r_m: float = Field(default=45, ge=0)          # beach plaza where the spine meets the beach
+    corridor_every_m: float = Field(default=300, gt=50) # green view corridors to the sea, spacing
+    corridor_m: float = Field(default=30, ge=0)         # their width (0 = none)
+    corridor_reach: float = Field(default=0.55, gt=0, le=1)   # how far inland, share of depth
+    collector_every_m: float = Field(default=230, gt=40)      # roads parallel to the beach, spacing
+    collector_m: float = Field(default=16, gt=0)
+    local_every_m: float = Field(default=190, gt=40)          # roads towards the beach, spacing
+    local_m: float = Field(default=12, gt=0)
+    waviness_m: float = Field(default=10, ge=0)               # gentle curves in the inner roads
+    lagoons: bool = False
+    lagoon_w_m: float = Field(default=55, gt=5)
+    lagoon_reach_m: float = Field(default=320, gt=20)         # how far inland a lagoon runs
+    lagoon_share: float = Field(default=0.0, ge=0, le=0.3)    # size the lagoons to this share of the land
+    loop_road_m: float = Field(default=10, gt=0)              # loop roads inside house clusters
+    hub_depth_m: float = Field(default=140, ge=0)             # entrance hub at the far end of the spine
+    gate_r_m: float = Field(default=34, ge=0)                 # entrance roundabout at the gate; 0 for none
+    beach_club: bool = True                                   # a beach club on the first line by the plaza
+    second_row_lane_m: float = Field(default=10, ge=0)        # lane behind the first row of sea-front lots
+    block_margin_m: float = Field(default=6, ge=0)            # buildings keep this far from a block edge
+    # the village fabric of North Coast resorts: gently curving lanes across each block, small
+    # buildings in rows on both sides of every lane, lagoon fingers between the rows
+    fabric: bool = True
+    lane_m: float = Field(default=10, gt=0)                   # lanes between the rows
+    curve_m: float = Field(default=9, ge=0)                   # how far the lanes curve
+    curve_wave_m: float = Field(default=260, gt=20)
+    channel_m: float = Field(default=22, gt=0)                # lagoon fingers between back-to-back rows
+    channel_every: int = Field(default=0, ge=0)               # a finger every n rows of plots (0 = none)
+
+
 class Strategy(_M):
     name: str
     description: str = ""
+    pattern: Literal["resort", "grid"] = "resort"
+    resort: ResortSettings = ResortSettings()
     block_w_m: float = Field(default=140, gt=10)     # along the frontage
     block_d_m: float = Field(default=70, gt=10)
     local_road_m: float = Field(default=14, gt=0)
@@ -118,7 +166,11 @@ class LayoutBrief(_M):
     height_bands: list[HeightBand] = []      # blank = the conditions' floors and height everywhere
     default_setback_m: float = Field(default=6.0, ge=0)   # where the conditions give none
     min_block_m2: float = Field(default=1500, gt=0)       # smaller pieces become landscape
+    # the design target for building coverage, below the legal cap: North Coast resorts build on
+    # 12.5-14% of the land (20% at most) and keep the rest for landscape and lagoons. Blank = the cap.
+    design_coverage: Optional[float] = Field(default=0.14, gt=0, le=1)
     depth_premiums: list[DepthPremium] = []
+    view_premiums: list[ViewPremium] = []
     site_costs: Literal["from_study", "from_layout"] = "from_study"
     road_cost_per_m2: float = Field(default=3500, ge=0)          # from_layout only
     landscape_cost_per_m2: float = Field(default=900, ge=0)     # from_layout only
@@ -172,13 +224,13 @@ DEFAULT_TYPOLOGIES = [
              footprint_w_m=48, footprint_d_m=13, plot_w_m=56, plot_d_m=28, units_per_building=6,
              sellable_share=0.92, persons_per_unit=5, price_per_m2=72_000, hard_cost_per_m2=24_000, sales_months=42),
     Typology(key="chalet", name="Chalet building", kind="block", category="residential", floors=3,
-             footprint_w_m=40, footprint_d_m=16, gap_m=14, unit_size_m2=110, sellable_share=0.85,
+             footprint_w_m=30, footprint_d_m=14, gap_m=16, max_length_m=64, unit_size_m2=110, sellable_share=0.85,
              persons_per_unit=4, price_per_m2=65_000, hard_cost_per_m2=22_000, sales_months=42),
-    Typology(key="apartment", name="Apartment building", kind="block", category="residential", floors=7,
-             footprint_w_m=45, footprint_d_m=18, gap_m=22, unit_size_m2=120, sellable_share=0.82,
+    Typology(key="apartment", name="Apartment building", kind="block", category="residential", floors=4,
+             footprint_w_m=36, footprint_d_m=16, gap_m=22, max_length_m=60, unit_size_m2=120, sellable_share=0.82,
              persons_per_unit=4, price_per_m2=55_000, hard_cost_per_m2=21_000, sales_months=48),
-    Typology(key="serviced", name="Serviced apartments", kind="block", category="serviced", floors=6,
-             footprint_w_m=40, footprint_d_m=18, gap_m=20, unit_size_m2=75, sellable_share=0.80,
+    Typology(key="serviced", name="Serviced apartments", kind="block", category="serviced", floors=3,
+             footprint_w_m=32, footprint_d_m=16, gap_m=20, max_length_m=56, unit_size_m2=75, sellable_share=0.80,
              persons_per_unit=3, price_per_m2=70_000, hard_cost_per_m2=25_000, sales_months=42),
     Typology(key="hotel", name="Hotel", kind="landmark", category="hotel", mode="lease", floors=5,
              block_cover=0.30, unit_size_m2=45, sellable_share=0.70, persons_per_unit=2,
@@ -189,29 +241,41 @@ DEFAULT_TYPOLOGIES = [
 ]
 
 DEFAULT_STRATEGIES = [
-    Strategy(name="Low-rise resort", description="Villas on the frontage, twin houses and townhouses behind, low chalets at the back.",
-             block_w_m=150, block_d_m=64, zones=[
-                 StrategyZone(from_share=0, to_share=0.2, mix={"villa": 0.8, "hotel": 0.2}),
-                 StrategyZone(from_share=0.2, to_share=0.55, mix={"twin": 0.5, "townhouse": 0.5}),
-                 StrategyZone(from_share=0.55, to_share=1, mix={"townhouse": 0.4, "chalet": 0.6})]),
-    Strategy(name="Balanced", description="Villas on the frontage, chalets in the middle, apartments and serviced units at the back.",
-             block_w_m=140, block_d_m=70, zones=[
+    Strategy(name="Lagoon resort", description="Beach hotel and villas on the first line, chalets around crystal lagoons, "
+             "townhouses and apartments behind, an entrance hub on the road.",
+             resort=ResortSettings(channel_every=1, local_every_m=300, corridor_m=0), zones=[
+                 StrategyZone(from_share=0, to_share=0.12, mix={"villa": 0.75, "hotel": 0.25}),
+                 StrategyZone(from_share=0.12, to_share=0.5, mix={"chalet": 0.75, "twin": 0.25}),
+                 StrategyZone(from_share=0.5, to_share=1, mix={"apartment": 0.5, "serviced": 0.3, "townhouse": 0.2})]),
+    Strategy(name="Villa resort", description="Low-rise: villa and twin-house clusters on loop roads around pocket parks, "
+             "townhouses in the middle, chalets at the back.",
+             resort=ResortSettings(corridor_every_m=260, collector_every_m=200, channel_every=2), zones=[
+                 StrategyZone(from_share=0, to_share=0.3, mix={"villa": 0.85, "hotel": 0.15}),
+                 StrategyZone(from_share=0.3, to_share=0.65, mix={"twin": 0.5, "townhouse": 0.5}),
+                 StrategyZone(from_share=0.65, to_share=1, mix={"chalet": 0.7, "townhouse": 0.3})]),
+    Strategy(name="Hotel and serviced", description="Two beach hotels, serviced apartments and chalets facing the sea, "
+             "apartments at the back.",
+             resort=ResortSettings(corridor_every_m=240, channel_every=2), zones=[
+                 StrategyZone(from_share=0, to_share=0.12, mix={"hotel": 0.6, "villa": 0.4}),
+                 StrategyZone(from_share=0.12, to_share=0.55, mix={"serviced": 0.55, "chalet": 0.45}),
+                 StrategyZone(from_share=0.55, to_share=1, mix={"apartment": 0.7, "townhouse": 0.3})]),
+    Strategy(name="Compact chalets", description="Staggered sea-facing chalet buildings on most of the land with wide view "
+             "corridors, villas on the first line, apartments at the back.",
+             resort=ResortSettings(corridor_every_m=220, corridor_m=36, channel_every=2), zones=[
+                 StrategyZone(from_share=0, to_share=0.1, mix={"villa": 0.7, "hotel": 0.3}),
+                 StrategyZone(from_share=0.1, to_share=0.6, mix={"chalet": 1.0}),
+                 StrategyZone(from_share=0.6, to_share=1, mix={"apartment": 0.6, "serviced": 0.4})]),
+    Strategy(name="Simple grid", description="A plain road grid, for plots where a resort pattern does not fit.",
+             pattern="grid", block_w_m=140, block_d_m=70, zones=[
                  StrategyZone(from_share=0, to_share=0.15, mix={"villa": 0.7, "hotel": 0.3}),
                  StrategyZone(from_share=0.15, to_share=0.5, mix={"chalet": 0.7, "townhouse": 0.3}),
                  StrategyZone(from_share=0.5, to_share=1, mix={"apartment": 0.6, "serviced": 0.4})]),
-    Strategy(name="Dense mid-rise", description="Chalets and apartment buildings throughout at the highest permitted floors, with more open space.",
-             block_w_m=130, block_d_m=80, extra_open_space_share=0.05, zones=[
-                 StrategyZone(from_share=0, to_share=0.15, mix={"chalet": 0.8, "hotel": 0.2}),
-                 StrategyZone(from_share=0.15, to_share=1, mix={"apartment": 0.65, "serviced": 0.35})]),
-    Strategy(name="Hotel-led", description="Hotels and villas on the frontage, serviced apartments and chalets behind.",
-             block_w_m=140, block_d_m=75, zones=[
-                 StrategyZone(from_share=0, to_share=0.2, mix={"hotel": 0.5, "villa": 0.5}),
-                 StrategyZone(from_share=0.2, to_share=0.6, mix={"serviced": 0.6, "chalet": 0.4}),
-                 StrategyZone(from_share=0.6, to_share=1, mix={"apartment": 0.7, "townhouse": 0.3})]),
 ]
 
 
 def default_brief(boundary: Optional[Boundary] = None) -> LayoutBrief:
     return LayoutBrief(boundary=boundary, typologies=DEFAULT_TYPOLOGIES, strategies=DEFAULT_STRATEGIES,
                        depth_premiums=[DepthPremium(name="First line to the frontage", within_m=150, uplift=0.25),
-                                       DepthPremium(name="Second line", within_m=400, uplift=0.10)])
+                                       DepthPremium(name="Second line", within_m=400, uplift=0.10)],
+                       view_premiums=[ViewPremium(name="Lagoon view", feature="water", within_m=25, uplift=0.12),
+                                      ViewPremium(name="Park view", feature="park", within_m=20, uplift=0.04)])

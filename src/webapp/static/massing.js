@@ -5,14 +5,26 @@
    Massing.view3d(canvas, geo)   rotatable 3D massing on a canvas
    Massing.legend(el, geo)       colour key
    Massing.outline(svg, pts, e)  boundary outline with numbered edges
+   Massing.editor(svg, geo, cb)  click-to-select blocks over the plan, for editing
 */
 (function () {
   "use strict";
   const NS = "http://www.w3.org/2000/svg";
   const PALETTE = ["#d9822b", "#e7b04a", "#c45a3b", "#4f8fd6", "#2f5f9e", "#7c5cc4", "#c23b4a", "#2a9d8f",
                    "#8d6e63", "#5c7c3a", "#b5838d", "#457b9d"];
-  const C = {site: "#f3efe4", road: "#b9bec4", green: "#cfe6c3", park: "#a9d39a", services: "#d7c9ec",
-             plot: "#f7f4ec", edge: "#6b7480", sea: "#9cc9e8"};
+  const C = {site: "#f3efe4", road: "#c3c7cc", green: "#d4e8c8", park: "#9fcf8c", services: "#ddd0ee",
+             plot: "#f7f4ec", edge: "#6b7480", sea: "#8fc3e6", beach: "#f0e2b6", water: "#6fc0e8", plotline: "#d9cfb8"};
+
+  // corners of a building [cx, cy, w, d, angle, ...]
+  function corners(q) {
+    const a = (q[4] || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => {
+      const x = u * q[2] / 2, y = v * q[3] / 2;
+      return [q[0] + x * c - y * s, q[1] + x * s + y * c];
+    });
+  }
+  function floorsOf(q) { return q.length > 6 ? q[5] : q[4]; }
+  function heightOf(q) { return q.length > 6 ? q[6] : q[5]; }
 
   function colorOf(i) { return PALETTE[i % PALETTE.length]; }
 
@@ -22,6 +34,12 @@
     return e;
   }
   function pts(ring) { return ring.map((p) => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" "); }
+  // a polygon given as one ring, or as [outline, hole, hole, ...]
+  function ringsOf(g) { return typeof g[0][0] === "number" ? [g] : g; }
+  function area(g, attrs) {
+    const d = ringsOf(g).map((r) => "M" + r.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z").join("");
+    return svgEl("path", Object.assign({d: d, "fill-rule": "evenodd"}, attrs));
+  }
 
   function plan(svg, geo) {
     const [x0, y0, x1, y1] = geo.bounds;
@@ -34,7 +52,7 @@
     // the water or road in front of the frontage
     g.appendChild(svgEl("rect", {x: x0 - pad, y: -pad * 3, width: W, height: pad * 3, fill: C.sea}));
     g.appendChild(svgEl("polygon", {points: pts(geo.site), fill: C.green, stroke: C.edge, "stroke-width": 2}));
-    for (const r of geo.roads) g.appendChild(svgEl("polygon", {points: pts(r), fill: C.road}));
+    for (const r of geo.beach || []) g.appendChild(area(r, {fill: C.beach}));
     for (const b of geo.blocks) {
       const fill = b.use === "park" ? C.park : b.use === "services" ? C.services : C.plot;
       const poly = svgEl("polygon", {points: pts(b.ring), fill: fill, stroke: "#d8d2c2", "stroke-width": 0.6});
@@ -43,10 +61,37 @@
       title.textContent = b.use === "park" ? "Park" : b.use === "services" ? "Services: " + (t ? t.name : "") : (t ? t.name : "");
       poly.appendChild(title);
       g.appendChild(poly);
+    }
+    for (const r of geo.green || []) g.appendChild(area(r, {fill: C.park}));
+    for (const r of geo.water || []) g.appendChild(area(r, {fill: C.water, stroke: "#3d97c6", "stroke-width": 1.2}));
+    for (const r of geo.roads) g.appendChild(area(r, {fill: C.road, stroke: "#a9aeb4", "stroke-width": 0.6}));
+    // trees in the parks
+    const tg = svgEl("g", {});
+    for (const t of geo.trees || []) {
+      tg.appendChild(svgEl("circle", {cx: t[0] + 1.2, cy: t[1] + 1.2, r: t[2], fill: "rgba(40,70,30,.18)"}));
+      tg.appendChild(svgEl("circle", {cx: t[0], cy: t[1], r: t[2], fill: "#6fae5c", stroke: "#4f8a40", "stroke-width": 0.4}));
+    }
+    g.appendChild(tg);
+    for (const b of geo.blocks) {
+      for (const q of b.plots || []) g.appendChild(svgEl("polygon", {points: pts(q), fill: "#fbf8f1", stroke: C.plotline, "stroke-width": 0.7}));
+    }
+    // buildings with a shadow to the north-east, longer for taller buildings
+    for (const b of geo.blocks) {
+      if (b.typ === null || b.typ === undefined) continue;
+      for (const q of b.b) {
+        const h = heightOf(q) || 7, o = Math.min(14, h * 0.35);
+        g.appendChild(svgEl("polygon", {points: pts(corners(q).map((p) => [p[0] + o, p[1] + o])), fill: "rgba(30,30,40,.22)"}));
+      }
+    }
+    for (const b of geo.blocks) {
       if (b.typ === null || b.typ === undefined) continue;
       const col = colorOf(b.typ);
-      for (const q of b.b) g.appendChild(svgEl("rect", {x: q[0], y: q[1], width: q[2], height: q[3], fill: col,
-                                                         stroke: "rgba(0,0,0,.35)", "stroke-width": 0.4}));
+      for (const q of b.b) g.appendChild(svgEl("polygon", {points: pts(corners(q)), fill: col,
+                                                            stroke: "rgba(0,0,0,.45)", "stroke-width": 0.5}));
+    }
+    if (geo.gate) {
+      const [gx, gy] = geo.gate;
+      g.appendChild(svgEl("rect", {x: gx - 9, y: gy - 3, width: 18, height: 6, fill: "#333"}));
     }
     for (const band of geo.bands || []) {
       if (!band.from) continue;
@@ -58,16 +103,63 @@
     lab.textContent = "Frontage";
     svg.appendChild(lab);
     for (const band of geo.bands || []) {
-      const t = svgEl("text", {x: x0 + fs * 0.4, y: -(band.from || 0) - fs * 0.5, "font-size": fs * 0.8, fill: "#c0392b"});
+      const t = svgEl("text", {x: x1 - fs * 0.4, y: -(band.from || 0) - fs * 0.5, "font-size": fs * 0.7, fill: "#c0392b",
+                               "text-anchor": "end", "paint-order": "stroke", stroke: "#fff", "stroke-width": fs * 0.15});
       t.textContent = band.name;
       svg.appendChild(t);
     }
+    // blocks the team edited: a dashed outline
+    for (const b of geo.blocks) {
+      if (b.locked) g.appendChild(svgEl("polygon", {points: pts(b.ring), fill: "none", stroke: "#1f78b4",
+                                                     "stroke-width": 2, "stroke-dasharray": "6 4"}));
+    }
+    svg._g = g;
+    return g;
+  }
+
+  // Click-to-select layer over the plan. cb(block) on each click; returns {setOn, mark, select}.
+  function editor(svg, geo, cb) {
+    const g = svg._g;
+    const layer = svgEl("g", {class: "edit-layer"});
+    layer.style.display = "none";
+    g.appendChild(layer);
+    const shapes = {};
+    let current = null;
+    for (const b of geo.blocks) {
+      const p = svgEl("polygon", {points: pts(b.ring), fill: "rgba(31,120,180,0)", stroke: "rgba(31,120,180,.5)",
+                                  "stroke-width": 1, "data-id": b.id, class: "edit-block"});
+      p.style.cursor = "pointer";
+      p.addEventListener("click", () => { select(b.id); cb(b); });
+      layer.appendChild(p);
+      shapes[b.id] = p;
+    }
+    function select(id) {
+      if (current !== null && shapes[current]) {
+        shapes[current].setAttribute("stroke-width", 1);
+        shapes[current].setAttribute("fill", shapes[current].dataset.pending ? "rgba(31,120,180,.25)" : "rgba(31,120,180,0)");
+      }
+      current = id;
+      if (id !== null && shapes[id]) {
+        shapes[id].setAttribute("stroke-width", 4);
+        shapes[id].setAttribute("fill", "rgba(31,120,180,.35)");
+      }
+    }
+    function mark(id, on) {
+      const p = shapes[id];
+      if (!p) return;
+      if (on) p.dataset.pending = "1"; else delete p.dataset.pending;
+      if (id !== current) p.setAttribute("fill", on ? "rgba(31,120,180,.25)" : "rgba(31,120,180,0)");
+    }
+    return {setOn: (on) => { layer.style.display = on ? "" : "none"; }, mark: mark, select: select};
   }
 
   function legend(el, geo) {
     const used = new Set(geo.blocks.filter((b) => b.typ !== null && b.typ !== undefined && b.b.length).map((b) => b.typ));
     const items = [...used].sort((a, b) => a - b).map((i) => [colorOf(i), geo.typologies[i].name]);
-    items.push([C.park, "Park"], [C.services, "Services plot"], [C.road, "Road"], [C.green, "Setback / landscape"]);
+    items.push([C.park, "Parks and green"], [C.services, "Services plot"], [C.road, "Road"]);
+    if ((geo.water || []).length) items.push([C.water, "Lagoon"]);
+    if ((geo.beach || []).length) items.push([C.beach, "Beach"]);
+    items.push([C.green, "Setback / landscape"]);
     el.innerHTML = items.map(([c, n]) => `<span><i style="background:${c}"></i>${n}</span>`).join("");
   }
 
@@ -88,7 +180,7 @@
     for (const b of geo.blocks) {
       if (b.typ === null || b.typ === undefined) continue;
       const col = colorOf(b.typ);
-      for (const q of b.b) boxes.push({x: q[0], y: q[1], w: q[2], d: q[3], h: q[5], col: col});
+      for (const q of b.b) boxes.push({c: corners(q), cx: q[0], cy: q[1], a: (q[4] || 0) * Math.PI / 180, h: heightOf(q), col: col});
     }
     const ctx = canvas.getContext("2d");
     function size() {
@@ -107,11 +199,13 @@
       return [Wc / 2 + panX + rx * s, Hc / 2 + panY - (ry * Math.sin(pitch) + z * Math.cos(pitch)) * s,
               ry * Math.cos(pitch) - z * Math.sin(pitch)];
     }
-    function poly(ring, z, fill, stroke) {
+    function poly(g, z, fill, stroke) {
       ctx.beginPath();
-      ring.forEach((p, i) => { const q = proj(p[0], p[1], z); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
-      ctx.closePath();
-      ctx.fillStyle = fill; ctx.fill();
+      for (const ring of ringsOf(g)) {
+        ring.forEach((p, i) => { const q = proj(p[0], p[1], z); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
+        ctx.closePath();
+      }
+      ctx.fillStyle = fill; ctx.fill("evenodd");
       if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 0.5; ctx.stroke(); }
     }
     function draw() {
@@ -119,13 +213,17 @@
       ctx.fillStyle = "#eef2f4"; ctx.fillRect(0, 0, Wc, Hc);
       poly([[x0 - span * 0.1, -span * 0.12], [x1 + span * 0.1, -span * 0.12], [x1 + span * 0.1, 0], [x0 - span * 0.1, 0]], 0, C.sea);
       poly(geo.site, 0, C.green, C.edge);
-      for (const r of geo.roads) poly(r, 0, C.road);
+      for (const r of geo.beach || []) poly(r, 0, C.beach);
       for (const b of geo.blocks) poly(b.ring, 0, b.use === "park" ? C.park : b.use === "services" ? C.services : C.plot);
-      const sorted = boxes.map((b) => [proj(b.x + b.w / 2, b.y + b.d / 2, b.h / 2)[2], b]).sort((a, b) => b[0] - a[0]);
+      for (const r of geo.green || []) poly(r, 0, C.park);
+      for (const r of geo.water || []) poly(r, 0, C.water);
+      for (const r of geo.roads) poly(r, 0, C.road);
+      const sorted = boxes.map((b) => [proj(b.cx, b.cy, b.h / 2)[2], b]).sort((a, b) => b[0] - a[0]);
       for (const [, b] of sorted) {
-        const c = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.d], [b.x, b.y + b.d]];
+        const c = b.c;
         // side faces whose outward normal points towards the viewer
-        const normals = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+        const ca = Math.cos(b.a), sa = Math.sin(b.a);
+        const normals = [[0, -1], [1, 0], [0, 1], [-1, 0]].map(([u, v]) => [u * ca - v * sa, u * sa + v * ca]);
         for (let i = 0; i < 4; i++) {
           const n = normals[i];
           const ny = n[0] * Math.sin(yaw) + n[1] * Math.cos(yaw);
@@ -204,5 +302,5 @@
     return Math.abs(a) / 2;
   }
 
-  window.Massing = {plan: plan, view3d: view3d, legend: legend, outline: outline, lonlatArea: lonlatArea};
+  window.Massing = {plan: plan, editor: editor, view3d: view3d, legend: legend, outline: outline, lonlatArea: lonlatArea};
 })();

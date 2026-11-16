@@ -110,7 +110,7 @@ def option_study(option: dict, brief: LayoutBrief, base: dict, name: Optional[st
 
 
 def _uplift(brief: LayoutBrief, name: str) -> float:
-    return next(p.uplift for p in brief.depth_premiums if p.name == name)
+    return next(p.uplift for p in list(brief.depth_premiums) + list(brief.view_premiums) if p.name == name)
 
 
 KEEP = ("revenue", "development_cost", "land_cost", "profit_pre_tax", "margin_on_revenue", "npv_pre_tax",
@@ -132,15 +132,73 @@ def evaluate(options: list[dict], brief: LayoutBrief, base: dict) -> list[dict]:
             o["feasibility"]["warnings"] = res.warnings
         except (ConditionError, CheckFailed, ValueError) as e:
             o["feasibility_error"] = str(e)
+    return rank(options)
+
+
+def rank(options: list[dict]) -> list[dict]:
+    """Number the options that ran through the engine, and mark the best one that passes."""
     ok = [o for o in options if "feasibility" in o]
 
     def key(o):
         f = o["feasibility"]
         return (not o["passes"], -(f["npv_pre_tax"] or 0), -(f["irr_pre_tax"] or -9), -(f["margin_on_revenue"] or -9))
 
-    for i, o in enumerate(sorted(ok, key=key)):
+    order = sorted(ok, key=key)
+    for o in options:
+        o.pop("rank", None)
+    for i, o in enumerate(order):
         o["rank"] = i + 1
-    best = next((o for o in sorted(ok, key=key) if o["passes"]), None)
+    best = next((o for o in order if o["passes"]), None)
     for o in options:
         o["best"] = o is best
     return options
+
+
+def edited_name(base: str) -> str:
+    return f"{base} (edited)"
+
+
+def edit_option(options: list[dict], i: int, changes: dict, site, brief: LayoutBrief, limits, land_area_m2,
+                base: dict) -> int:
+    """Apply the team's block changes to option i and return the index of the edited option.
+
+    Editing an option that was already edited (or the original of one) adds to the earlier edits. The strategy is laid out again
+    from scratch (the generator is deterministic, so block numbers stay the same), the edits are
+    applied, and the result goes through the engine and the ranking like any other option. The edited
+    option replaces an earlier edit of the same strategy, and the original stays for comparison.
+    """
+    from .generator import generate
+
+    src = options[i]
+    strategy = src.get("base_strategy") or src["strategy"]
+    prior = src.get("edits") or next((o.get("edits") for o in options
+                                      if o.get("strategy") == edited_name(strategy) and o.get("edits")), None) or {}
+    edits = {str(k): dict(v) for k, v in prior.items()}
+    for bid, e in changes.items():
+        if not e:                      # an empty change puts the block back as generated
+            edits.pop(str(bid), None)
+            continue
+        cur = edits.setdefault(str(bid), {})
+        cur.update({k: v for k, v in e.items() if k in ("use", "floors")})
+        if cur.get("floors") in ("", None):
+            cur.pop("floors", None)
+    out = generate(site, brief, limits, land_area_m2=land_area_m2, strategies=[strategy], edits={strategy: edits})
+    if not out:
+        raise ValueError(f"the strategy '{strategy}' is no longer in the brief")
+    new = out[0]
+    if "error" in new:
+        raise ValueError(new["error"])
+    new["strategy"] = edited_name(strategy)
+    new["base_strategy"] = strategy
+    new["edits"] = edits
+    evaluate([new], brief, base)
+    for o in options:
+        o.pop("best", None)
+    j = next((k for k, o in enumerate(options) if o.get("strategy") == new["strategy"]), None)
+    if j is None:
+        options.append(new)
+        j = len(options) - 1
+    else:
+        options[j] = new
+    rank(options)
+    return j

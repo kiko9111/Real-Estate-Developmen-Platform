@@ -136,6 +136,13 @@ class Site:
     depth_m: float              # deepest point from the frontage line
     angle_deg: float            # rotation applied to the input ring
     edge_lengths: list[float]   # of the input ring, edge i runs from point i to point i+1
+    origin: tuple = (0.0, 0.0)  # input point moved to the frontage line before rotating
+    shift_x: float = 0.0        # moved along x after rotating, so the plot starts at x = 0
+
+    def to_frame(self, g):
+        """A geometry from the input drawing's coordinates into the working frame."""
+        g = affinity.rotate(affinity.translate(g, -self.origin[0], -self.origin[1]), -self.angle_deg, origin=(0, 0))
+        return affinity.translate(g, -self.shift_x, 0)
 
 
 def make_site(ring_m: list[tuple[float, float]], frontage_edge: int = 0) -> Site:
@@ -165,7 +172,7 @@ def make_site(ring_m: list[tuple[float, float]], frontage_edge: int = 0) -> Site
     minx = g.bounds[0]
     g = affinity.translate(g, -minx, 0)
     return Site(polygon=g, area_m2=g.area, frontage_m=edges[i], depth_m=g.bounds[3], angle_deg=ang % 360,
-                edge_lengths=edges)
+                edge_lengths=edges, origin=(x0, y0), shift_x=minx)
 
 
 def _shoelace(r):

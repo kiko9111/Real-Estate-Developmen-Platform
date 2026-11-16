@@ -16,16 +16,19 @@ from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
 from layout import Boundary, BoundaryError, LayoutBrief, Limits, default_brief, generate, make_site, rectangle
-from layout.bestuse import evaluate
+from layout.bestuse import edit_option, edited_name, evaluate, rank
+from layout.masterplan import boundary_ring, guess_mapping, import_option, layer_summary, read_dxf
 from layout.geometry import lonlat_to_local, parse_dxf, parse_kml, parse_points_text
 
 from . import studies as svc
 from .formschema import form_schema
-from .models import LayoutRecord, Land, StudyRecord, now
+from .models import LayoutRecord, Land, MasterPlanImport, StudyRecord, now
 from .schemas import LandConditions
 from .security import require_editor, verify_csrf
 
 MAX_UPLOAD = 5 * 1024 * 1024
+MAX_MASTERPLAN = 25 * 1024 * 1024
+MP_USES = ["ignore", "boundary", "road", "park", "water", "beach", "services", "buildings"]
 
 
 # ---------------------------------------------------------------- service
@@ -71,14 +74,29 @@ def base_study(land: Land, rec: LayoutRecord) -> tuple[dict, str]:
 
 
 def run_layout(rec: LayoutRecord) -> None:
+    """Lay out every strategy and run it through the engine. The team's edited options are laid out
+    again with their edits, so a rerun after a change to the conditions or the base study keeps them."""
     land = rec.land
     cond = LandConditions.model_validate(land.conditions or {})
+    kept = {o["base_strategy"]: o["edits"] for o in (rec.options or []) if o.get("edits") and o.get("base_strategy")}
     rec.conditions_used = land.conditions or {}
     rec.run_at = now()
     try:
         brief = LayoutBrief.model_validate(rec.brief)
         site = site_of(brief)
-        options = generate(site, brief, Limits.from_conditions(cond), land_area_m2=land.area_m2)
+        limits = Limits.from_conditions(cond)
+        options = generate(site, brief, limits, land_area_m2=land.area_m2)
+        names = {s.name for s in brief.strategies}
+        for strategy, edits in kept.items():
+            if strategy not in names:
+                continue
+            for o in generate(site, brief, limits, land_area_m2=land.area_m2, strategies=[strategy],
+                              edits={strategy: edits}):
+                o.update({"strategy": edited_name(strategy), "base_strategy": strategy, "edits": edits})
+                options.append(o)
+        for mp in rec.masterplans:
+            if mp.ready:
+                options.append(masterplan_option(mp, brief, limits, land))
         base, base_name = base_study(land, rec)
         options = evaluate(options, brief, base)
         for o in options:
@@ -88,6 +106,21 @@ def run_layout(rec: LayoutRecord) -> None:
     except (BoundaryError, ValidationError, ValueError) as e:
         rec.options = None
         rec.error = str(e)
+
+
+def masterplan_name(mp: MasterPlanImport) -> str:
+    return f"Architect's plan: {mp.name}"
+
+
+def masterplan_option(mp: MasterPlanImport, brief: LayoutBrief, limits: Limits, land: Land) -> dict:
+    """The imported plan measured as an option, or an error entry saying why it could not be."""
+    name = masterplan_name(mp)
+    try:
+        o = import_option(mp.source, mp.mapping, mp.frontage_edge, brief, limits, land.area_m2, name=name)
+    except (BoundaryError, ValueError) as e:
+        o = {"strategy": name, "description": "Imported from the architect's drawing.", "error": str(e)}
+    o["masterplan_id"] = mp.id
+    return o
 
 
 def parse_boundary(mode: str, data: bytes, filename: str, text: str, points_json: str,
@@ -280,6 +313,165 @@ def add_routes(app, h) -> None:
         st = h.new_study(db, rec.land, data["name"], data, user, description=desc)
         h.flash(request, "Study created from the layout option. Its products and built area come from the layout.")
         return h.redirect(f"/studies/{st.id}")
+
+    @app.post("/layouts/{rid}/options/{i}/edit", dependencies=[Depends(verify_csrf)])
+    def edit_option_route(request: Request, rid: int, i: int, edits: str = Form(...), user=Depends(current_user),
+                          db=Depends(get_db)):
+        """Apply the team's block changes ({block id: {"use": ..., "floors": ...}}) to option i."""
+        require_editor(user)
+        rec = h.get_or_404(db, LayoutRecord, rid)
+        opts = json.loads(json.dumps(rec.options or []))
+        if not (0 <= i < len(opts)) or "error" in opts[i]:
+            raise HTTPException(404, "No such option.")
+        if opts[i].get("imported"):
+            h.flash(request, "An imported plan is measured as drawn. Change the drawing and import it again.", "error")
+            return h.redirect(f"/layouts/{rec.id}?option={i}")
+        try:
+            changes = json.loads(edits)
+            if not isinstance(changes, dict) or not changes:
+                raise ValueError("no changes to apply")
+            land = rec.land
+            brief = LayoutBrief.model_validate(rec.brief)
+            cond = LandConditions.model_validate(rec.conditions_used or land.conditions or {})
+            base, base_name = base_study(land, rec)
+            j = edit_option(opts, i, changes, site_of(brief), brief, Limits.from_conditions(cond), land.area_m2, base)
+            opts[j]["base_study"] = base_name
+        except (BoundaryError, ValidationError, ValueError) as e:
+            h.flash(request, f"The edit could not be applied: {e}", "error")
+            return h.redirect(f"/layouts/{rec.id}?option={i}")
+        rec.options = json.loads(json.dumps(opts, default=float))
+        db.commit()
+        o = opts[j]
+        msg = f"Edited plan saved as '{o['strategy']}'"
+        msg += f", ranked {o['rank']} of {sum(1 for x in opts if 'rank' in x)}." if "rank" in o else "."
+        if not o.get("passes", True):
+            msg += " It breaks a condition; see the compliance check."
+        h.flash(request, msg)
+        return h.redirect(f"/layouts/{rec.id}?option={j}")
+
+    # ------------------------------------------------------------ architect's master plan
+
+    @app.get("/layouts/{rid}/masterplan", response_class=HTMLResponse)
+    def masterplan_upload_page(request: Request, rid: int, user=Depends(current_user), db=Depends(get_db)):
+        rec = h.get_or_404(db, LayoutRecord, rid)
+        return h.render(request, "masterplan_upload.html", {"rec": rec, "land": rec.land}, user=user)
+
+    @app.post("/layouts/{rid}/masterplan", dependencies=[Depends(verify_csrf)])
+    async def masterplan_upload(request: Request, rid: int, name: str = Form(""),
+                                file: Optional[UploadFile] = File(None), user=Depends(current_user), db=Depends(get_db)):
+        require_editor(user)
+        rec = h.get_or_404(db, LayoutRecord, rid)
+
+        def fail(msg):
+            return h.render(request, "masterplan_upload.html", {"rec": rec, "land": rec.land, "errors": [msg]}, 400,
+                            user=user)
+
+        if file is None or not file.filename:
+            return fail("choose the master plan DXF file")
+        fname = file.filename
+        if fname.lower().endswith(".dwg"):
+            return fail("DWG files cannot be read; save the drawing as DXF in AutoCAD and upload that")
+        if not fname.lower().endswith(".dxf"):
+            return fail("upload a .dxf file")
+        data = await file.read(MAX_MASTERPLAN + 1)
+        if len(data) > MAX_MASTERPLAN:
+            return fail("the file is larger than 25 MB; export only the master plan layers")
+        try:
+            source = read_dxf(data)
+            brief = LayoutBrief.model_validate(rec.brief)
+        except (BoundaryError, ValidationError, ValueError) as e:
+            return fail(str(e))
+        mapping = guess_mapping(source["layers"], brief)
+        mp = MasterPlanImport(layout_id=rec.id, name=(name.strip() or fname.rsplit(".", 1)[0])[:200],
+                              filename=fname[:300], source=source, mapping=mapping, created_by_id=user.id)
+        db.add(mp)
+        db.commit()
+        h.flash(request, f"Read {sum(len(v) for v in source['layers'].values()):,} closed outlines on "
+                         f"{len(source['layers'])} layers. Check what each layer is, then import.")
+        return h.redirect(f"/masterplans/{mp.id}")
+
+    def _mp_page(request, mp, user, errors=None, status=200):
+        rec = mp.layout
+        brief = LayoutBrief.model_validate(rec.brief)
+        uses = MP_USES[:-2] + [t.key for t in brief.typologies] + MP_USES[-2:]
+        labels = {"ignore": "Ignore", "boundary": "Plot boundary", "road": "Roads", "park": "Parks and green",
+                  "water": "Water and lagoons", "beach": "Beach", "services": "Services plots",
+                  "buildings": "Building footprints"}
+        labels.update({t.key: f"{t.name} plots" for t in brief.typologies})
+        try:
+            ring = boundary_ring(mp.source["layers"], mp.mapping)
+        except BoundaryError:
+            ring = None
+        return h.render(request, "masterplan.html", {
+            "rec": rec, "land": rec.land, "mp": mp, "layers": layer_summary(mp.source["layers"]),
+            "uses": uses, "labels": labels, "ring": ring, "errors": errors or [],
+            "drawing": {"layers": mp.source["layers"], "mapping": mp.mapping},
+        }, status, user=user)
+
+    @app.get("/masterplans/{mid}", response_class=HTMLResponse)
+    def masterplan_page(request: Request, mid: int, user=Depends(current_user), db=Depends(get_db)):
+        return _mp_page(request, h.get_or_404(db, MasterPlanImport, mid), user)
+
+    @app.post("/masterplans/{mid}", dependencies=[Depends(verify_csrf)])
+    async def masterplan_save(request: Request, mid: int, user=Depends(current_user), db=Depends(get_db)):
+        require_editor(user)
+        mp = h.get_or_404(db, MasterPlanImport, mid)
+        rec = mp.layout
+        form = await request.form()
+        names = sorted(mp.source["layers"])
+        mapping = {}
+        for i, n in enumerate(names):
+            use = str(form.get(f"use_{i}", "ignore"))
+            fl = str(form.get(f"floors_{i}", "")).strip()
+            mapping[n] = {"use": use, "floors": int(fl) if fl.isdigit() and int(fl) > 0 else None}
+        try:
+            edge = int(str(form.get("frontage_edge", mp.frontage_edge)))
+        except ValueError:
+            edge = 0
+        mp.mapping = mapping
+        try:
+            ring = boundary_ring(mp.source["layers"], mapping)
+            mp.frontage_edge = edge % len(ring)
+            if form.get("action") == "edge":           # only the frontage edge changed: show it again
+                db.commit()
+                return h.redirect(f"/masterplans/{mp.id}")
+            land = rec.land
+            brief = LayoutBrief.model_validate(rec.brief)
+            cond = LandConditions.model_validate(land.conditions or {})
+            o = masterplan_option(mp, brief, Limits.from_conditions(cond), land)
+            if "error" in o:
+                raise ValueError(o["error"])
+            base, base_name = base_study(land, rec)
+            evaluate([o], brief, base)
+            o["base_study"] = base_name
+        except (BoundaryError, ValidationError, ValueError) as e:
+            db.commit()
+            return _mp_page(request, mp, user, [str(e)], 400)
+        mp.ready = True
+        opts = [x for x in json.loads(json.dumps(rec.options or [])) if x.get("masterplan_id") != mp.id]
+        opts.append(o)
+        rank(opts)
+        rec.options = json.loads(json.dumps(opts, default=float))
+        db.commit()
+        j = len(opts) - 1
+        msg = f"'{o['strategy']}' measured and run through the feasibility engine"
+        msg += f", ranked {o['rank']} of {sum(1 for x in opts if 'rank' in x)}." if "rank" in o else "."
+        if not o.get("passes", True):
+            msg += " It breaks a condition; see the compliance check."
+        h.flash(request, msg)
+        return h.redirect(f"/layouts/{rec.id}?option={j}")
+
+    @app.post("/masterplans/{mid}/delete", dependencies=[Depends(verify_csrf)])
+    def masterplan_delete(request: Request, mid: int, user=Depends(current_user), db=Depends(get_db)):
+        require_editor(user)
+        mp = h.get_or_404(db, MasterPlanImport, mid)
+        rec = mp.layout
+        opts = [x for x in json.loads(json.dumps(rec.options or [])) if x.get("masterplan_id") != mp.id]
+        rec.options = rank(opts) if rec.options is not None else None
+        db.delete(mp)
+        db.commit()
+        h.flash(request, "Imported plan deleted.")
+        return h.redirect(f"/layouts/{rec.id}")
 
     @app.post("/layouts/{rid}/delete", dependencies=[Depends(verify_csrf)])
     def delete_layout(request: Request, rid: int, user=Depends(current_user), db=Depends(get_db)):

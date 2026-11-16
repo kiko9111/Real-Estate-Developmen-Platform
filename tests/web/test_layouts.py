@@ -29,7 +29,7 @@ def test_layout_flow_rectangle_to_study(analyst, app):
     from webapp.models import LayoutRecord, StudyRecord
     rec = db.get(LayoutRecord, rid)
     ok = [o for o in rec.options if "feasibility" in o]
-    assert len(ok) == 4
+    assert len(ok) >= 4
     # the land's conditions are respected by every option that passes
     for o in ok:
         assert o["kpis"]["coverage"] <= CONDITIONS["footprint_pct"] + 1e-6
@@ -99,3 +99,108 @@ def test_deleting_land_deletes_layouts(admin):
     rid = _layout(admin, lid)
     assert admin.post(f"/lands/{lid}/delete").status_code == 303
     assert admin.get(f"/layouts/{rid}").status_code == 404
+
+
+def test_team_edits_a_plan_and_rerun_keeps_it(analyst, viewer, app):
+    lid = make_land(analyst)
+    rid = _layout(analyst, lid)
+    assert analyst.post(f"/layouts/{rid}/run").status_code == 303
+    from webapp.models import LayoutRecord
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    i = next(k for k, o in enumerate(rec.options) if "feasibility" in o)
+    n = len(rec.options)
+    name = rec.options[i]["strategy"]
+    blk = next(b for b in rec.options[i]["geometry"]["blocks"] if b["use"] not in ("park", "services", ""))
+    db.close()
+    page = analyst.get(f"/layouts/{rid}?option={i}").text
+    assert "Edit the plan" in page and "Apply and rerun" in page
+    edits = json.dumps({str(blk["id"]): {"use": "park"}})
+    assert viewer.post(f"/layouts/{rid}/options/{i}/edit", {"edits": edits}).status_code == 403
+    r = analyst.post(f"/layouts/{rid}/options/{i}/edit", {"edits": edits})
+    assert r.status_code == 303
+    j = int(r.headers["location"].split("option=")[1])
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    assert len(rec.options) == n + 1 and rec.options[j]["strategy"] == f"{name} (edited)"
+    assert rec.options[j]["edits"] == {str(blk["id"]): {"use": "park"}}
+    assert sum(1 for o in rec.options if o.get("best")) == 1
+    db.close()
+    assert f"{name} (edited)" in analyst.get(f"/layouts/{rid}?option={j}").text
+    # a bad edit is refused with a message, nothing saved
+    r = analyst.post(f"/layouts/{rid}/options/{i}/edit", {"edits": json.dumps({str(blk["id"]): {"use": "castle"}})})
+    assert r.status_code == 303
+    assert "could not be applied" in analyst.get(r.headers["location"]).text
+    # running again keeps the edited option
+    assert analyst.post(f"/layouts/{rid}/run").status_code == 303
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    kept = [o for o in rec.options if o["strategy"] == f"{name} (edited)"]
+    assert len(kept) == 1 and kept[0]["edits"] == {str(blk["id"]): {"use": "park"}} and "rank" in kept[0]
+    db.close()
+
+
+def test_architects_master_plan_import(analyst, viewer, app):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("mp_drawing", Path(__file__).parent.parent / "test_masterplan.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    drawing = mod.drawing
+    lid = make_land(analyst)
+    rid = _layout(analyst, lid)
+    assert analyst.get(f"/layouts/{rid}/masterplan").status_code == 200
+    r = analyst.post(f"/layouts/{rid}/masterplan", {"name": "Scheme A"}, files={"file": ("plan.dwg", b"AC1027", "x")})
+    assert r.status_code == 400 and "DXF" in r.text
+    assert viewer.post(f"/layouts/{rid}/masterplan", {"name": "x"},
+                       files={"file": ("plan.dxf", drawing(), "application/dxf")}).status_code == 403
+    r = analyst.post(f"/layouts/{rid}/masterplan", {"name": "Scheme A"},
+                     files={"file": ("plan.dxf", drawing(), "application/dxf")})
+    assert r.status_code == 303, r.text
+    mid = int(r.headers["location"].rsplit("/", 1)[1])
+    page = analyst.get(f"/masterplans/{mid}").text
+    assert "SITE-BOUNDARY" in page and "Building footprints" in page
+    names = sorted(["BEACH", "BLDG G+2", "CHALET", "GREEN-PARK", "ROADS", "SERVICES", "SITE-BOUNDARY", "TEXT", "VILLA"])
+    form = {}
+    from webapp.models import MasterPlanImport
+    db = app.state.Session()
+    mp = db.get(MasterPlanImport, mid)
+    layer_names = sorted(mp.source["layers"])
+    assert set(layer_names) <= set(names)
+    for i, n in enumerate(layer_names):
+        form[f"use_{i}"] = mp.mapping[n]["use"]
+        form[f"floors_{i}"] = str(mp.mapping[n]["floors"] or "")
+    db.close()
+    # a bad mapping is shown again with the reason
+    bad = dict(form, **{f"use_{layer_names.index('SITE-BOUNDARY')}": "ignore"}, action="import")
+    r = analyst.post(f"/masterplans/{mid}", bad)
+    assert r.status_code == 400 and "boundary" in r.text
+    r = analyst.post(f"/masterplans/{mid}", dict(form, frontage_edge="0", action="import"))
+    assert r.status_code == 303, r.text
+    j = int(r.headers["location"].split("option=")[1])
+    page = analyst.get(r.headers["location"]).text
+    assert "Architect&#39;s plan: Scheme A" in page or "Architect's plan: Scheme A" in page
+    from webapp.models import LayoutRecord
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    o = rec.options[j]
+    assert o["imported"] and o["masterplan_id"] == mid and "feasibility" in o and o["rank"] == 1
+    db.close()
+    # the generated options join it on a run, and it stays
+    assert analyst.post(f"/layouts/{rid}/run").status_code == 303
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    imp = [o for o in rec.options if o.get("masterplan_id") == mid]
+    assert len(imp) == 1 and "rank" in imp[0] and len(rec.options) >= 5
+    i = rec.options.index(imp[0])
+    db.close()
+    # an imported plan is not edited block by block
+    r = analyst.post(f"/layouts/{rid}/options/{i}/edit", {"edits": json.dumps({"0": {"use": "park"}})})
+    assert r.status_code == 303 and "measured as drawn" in analyst.get(r.headers["location"]).text
+    # deleting it removes its option
+    assert analyst.post(f"/masterplans/{mid}/delete").status_code == 303
+    db = app.state.Session()
+    rec = db.get(LayoutRecord, rid)
+    assert not any(o.get("masterplan_id") == mid for o in rec.options)
+    assert sum(1 for o in rec.options if o.get("best")) == 1
+    db.close()

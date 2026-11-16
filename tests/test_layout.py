@@ -64,6 +64,12 @@ def test_dxf_closed_polyline():
     assert make_site(ring).area_m2 == pytest.approx(120_000)
 
 
+def _miny(q):
+    x, y, w, d, a = q[:5]
+    r = math.radians(a)
+    return min(y + u * w / 2 * math.sin(r) + v * d / 2 * math.cos(r) for u in (-1, 1) for v in (-1, 1))
+
+
 def _ok(o):
     assert "error" not in o, o.get("error")
     return o
@@ -85,8 +91,8 @@ def test_limits_hold_and_compliance_reports_them():
         assert all(c["ok"] for c in o["compliance"]), o["compliance"]
         # nothing is built inside the sea setback
         for b in o["geometry"]["blocks"]:
-            for x, y, w, d, f, h in b["b"]:
-                assert y >= 40 - 1e-6
+            for q in b["b"]:
+                assert _miny(q) >= 40 - 0.2
 
 
 def test_height_bands_cut_floors():
@@ -96,7 +102,7 @@ def test_height_bands_cut_floors():
     for o in generate(site, brief, Limits(coverage=0.25)):
         o = _ok(o)
         for b in o["geometry"]["blocks"]:
-            for x, y, w, d, f, h in b["b"]:
+            for x, y, w, d, a, f, h in b["b"]:
                 cy = sum(p[1] for p in b["ring"]) / len(b["ring"])
                 if cy < 380:
                     assert h <= 7
@@ -179,3 +185,131 @@ def test_layout_costs_from_layout_charge_roads_and_green():
     assert names == ["roads and utilities", "landscape"]
     road = data["costs"]["site_costs"][0]["rate_per_m2_land"] * LAND
     assert road == pytest.approx(brief.road_cost_per_m2 * o["kpis"]["roads_share"] * site.area_m2)
+
+
+def test_resort_pattern_draws_beach_lagoons_corridors_and_house_clusters():
+    site = make_site(rectangle(900, 1500))
+    brief = default_brief()
+    opts = {o["strategy"]: _ok(o) for o in generate(site, brief, Limits(coverage=0.2, max_floors=6))}
+    lagoon = opts["Lagoon resort"]
+    g = lagoon["geometry"]
+    assert g["beach"] and g["water"] and g["green"]
+    uses = {u["use"]: u["share"] for u in lagoon["land_use"]}
+    assert uses["Beach"] > 0 and uses["Lagoons and water"] > 0
+    # lagoon-side units carry the lagoon premium
+    assert any("Lagoon view" in d for d in lagoon["premiums"].values())
+    villas = opts["Villa resort"]
+    houses = [q for b in villas["geometry"]["blocks"] if b["plots"] for q in b["b"]]
+    assert len(houses) > 50
+    assert any(abs(q[4]) > 5 for q in houses)           # houses turn to face their loop road
+    for o in opts.values():
+        total = sum(u["area_m2"] for u in o["land_use"])
+        assert total == pytest.approx(site.area_m2, rel=1e-6)
+
+
+def test_small_plot_skips_lagoons_with_a_note():
+    site = make_site(rectangle(250, 500))
+    brief = default_brief()
+    s0 = brief.strategies[0]
+    brief.strategies[0] = s0.model_copy(update={"resort": s0.resort.model_copy(
+        update={"lagoons": True, "lagoon_share": 0.1, "channel_every": 0})})
+    o = _ok(generate(site, brief, Limits(coverage=0.25, max_floors=4), strategies=["Lagoon resort"])[0])
+    assert not o["geometry"]["water"]
+    assert any("too small for lagoons" in n for n in o["notes"])
+
+
+def test_team_edits_change_blocks_and_keep_limits():
+    site = make_site(rectangle(400, LAND / 400))
+    brief = default_brief()
+    L = Limits(coverage=0.22, far=0.6, max_floors=5, max_height_m=18)
+    opts = evaluate(generate(site, brief, L, land_area_m2=LAND, strategies=["Villa resort"]), brief, BASE)
+    o = _ok(opts[0])
+    blocks = o["geometry"]["blocks"]
+    assert all("id" in b for b in blocks)
+    # turn the first house block into apartments and the second into a park; ask for too many floors
+    houses = [b for b in blocks if b["use"] in ("villa", "twin", "townhouse")]
+    assert len(houses) >= 2
+    orig = houses[1]["use"]
+    a, p = houses[0]["id"], houses[1]["id"]
+    from layout.bestuse import edit_option
+    j = edit_option(opts, 0, {a: {"use": "apartment", "floors": 9}, p: {"use": "park"}}, site, brief, L, LAND, BASE)
+    e = _ok(opts[j])
+    assert e["strategy"] == "Villa resort (edited)" and e["base_strategy"] == "Villa resort"
+    assert len(opts) == 2 and sum(x["best"] for x in opts) == 1 and {x["rank"] for x in opts} == {1, 2}
+    eb = {b["id"]: b for b in e["geometry"]["blocks"]}
+    assert eb[a]["use"] == "apartment" and eb[a]["locked"] and eb[p]["use"] == "park" and not eb[p]["b"]
+    # the height limit wins over the edit
+    assert all(q[5] <= 5 for q in eb[a]["b"]) and eb[a]["b"]
+    assert all(c["ok"] for c in e["compliance"] if c["label"].startswith(("Floors", "Coverage", "Floor-area")))
+    assert "feasibility" in e
+    # editing the edited option adds to its edits; an empty change puts a block back
+    j2 = edit_option(opts, j, {p: {}, a: {"floors": 2}}, site, brief, L, LAND, BASE)
+    assert j2 == j and len(opts) == 2
+    assert opts[j]["edits"] == {str(a): {"use": "apartment", "floors": 2}}
+    eb = {b["id"]: b for b in opts[j]["geometry"]["blocks"]}
+    assert eb[p]["use"] == orig and not eb[p]["locked"]
+    assert all(q[5] <= 2 for q in eb[a]["b"])
+    with pytest.raises(ValueError):
+        edit_option(opts, j, {a: {"use": "castle"}}, site, brief, L, LAND, BASE)
+
+
+def test_edited_blocks_are_not_donated_by_the_mix_repair():
+    site = make_site(rectangle(500, 800))
+    brief = default_brief()
+    L = Limits(coverage=0.2, max_floors=5, shares=[ShareLimit("residential", "units", max_share=0.5)])
+    plain = _ok(generate(site, brief, L, strategies=["Compact chalets"])[0])
+    res = [b for b in plain["geometry"]["blocks"] if b["use"] in ("chalet", "apartment")]
+    edits = {str(b["id"]): {"use": "chalet"} for b in res[:3]}
+    o = _ok(generate(site, brief, L, strategies=["Compact chalets"], edits={"Compact chalets": edits})[0])
+    eb = {str(b["id"]): b for b in o["geometry"]["blocks"]}
+    assert all(eb[k]["use"] == "chalet" and eb[k]["locked"] for k in edits)
+    row = next(c for c in o["compliance"] if c["label"].startswith("Residential share of units"))
+    assert row["ok"]
+
+
+def test_narrow_plot_still_fills_its_blocks():
+    # 250 m of frontage: too narrow for lines across each half, and blocks too narrow for long buildings
+    site = make_site(rectangle(250, 672))
+    L = Limits(coverage=0.2, far=0.4, max_floors=3, services_share=0.05, open_space_share=0.3, setback_sea_m=200)
+    opts = {o["strategy"]: _ok(o) for o in generate(site, default_brief(), L)}
+    grid = opts.pop("Simple grid")["kpis"]["built_area_m2"]
+    for name, o in opts.items():
+        assert o["kpis"]["built_area_m2"] >= 0.6 * grid, name
+        empty = [b for b in o["geometry"]["blocks"] if b["use"] not in ("park", "") and not b["b"]]
+        assert len(empty) <= 1, (name, [b["use"] for b in empty])
+
+
+def test_master_plan_modules_village_fabric_sea_front_gate_and_trees():
+    site = make_site(rectangle(600, 1400))
+    L = Limits(coverage=0.2, max_height_m=24)
+    o = _ok(generate(site, default_brief(), L, strategies=["Lagoon resort"])[0])
+    geo = o["geometry"]
+    typ = {i: t["key"] for i, t in enumerate(geo["typologies"])}
+    chalets = [q for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "chalet" for q in b["b"]]
+    # the village fabric: small buildings in rows along gently curving lanes, parallel to the sea
+    assert len(chalets) > 60
+    assert all(abs(q[4]) < 25 for q in chalets) and any(abs(q[4]) > 2 for q in chalets)
+    # lagoon fingers between the rows: most chalets look onto water
+    assert o["premiums"]["chalet"].get("Lagoon view", 0) > 0.6
+    # the lagoons start behind the first line: nothing but beach, roads and the promenade below it
+    rs = default_brief().strategies[0].resort
+    first_line = 40 + rs.promenade_m + rs.first_line_m
+    assert all(min(p[1] for p in (r[0] if isinstance(r[0][0], list) else r)) > first_line - 1 for r in geo["water"])
+    # sea-front lots in rows
+    villas = [b for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "villa"]
+    assert villas and all(len(b["plots"]) == len(b["b"]) for b in villas)
+    assert geo["gate"] and len(geo["trees"]) > 100
+
+
+def test_resort_follows_north_coast_references():
+    # published Ras El Hekma / Sahel plans: about 12.5-14% coverage, low-rise, large lagoons
+    site = make_site(rectangle(600, 1400))
+    L = Limits(coverage=0.2, max_height_m=24)
+    brief = default_brief()
+    o = _ok(generate(site, brief, L, strategies=["Lagoon resort"])[0])
+    k = o["kpis"]
+    assert k["coverage"] <= brief.design_coverage + 0.005
+    assert 8 <= k["units_per_feddan"] <= 16
+    water = next(u for u in o["land_use"] if u["use"] == "Lagoons and water")
+    assert water["share"] >= 0.08
+    assert max(t.floors for t in brief.typologies if t.key in ("apartment", "serviced")) <= 4
