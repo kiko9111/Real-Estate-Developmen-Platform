@@ -428,6 +428,33 @@ class Plan:
 
     # ------------------------------------------------------------ step 8
 
+    def meet_design_coverage(self):
+        """Down to the brief's design coverage by turning whole blocks into parks, the least valuable
+        first (cheapest type, then furthest from the frontage and from any water), so the plan gains
+        pocket parks instead of gaps scattered through every block."""
+        dc = self.brief.design_coverage
+        L = self.limits
+        if not dc or (L.coverage and dc >= L.coverage):
+            return
+        target = dc * self.land
+        changed = 0
+        for _ in range(len(self.blocks)):
+            foot = self.totals(self.measure())["footprint"]
+            if foot <= target:
+                break
+            cands = [b for b in self.blocks if b.buildings and not b.locked and b.use not in ("park", "services", "")
+                     and b.kind not in ("front", "club")
+                     and (self.water.is_empty or b.poly.distance(self.water) > 30)]
+            if not cands:
+                break
+            b = min(cands, key=lambda b: (self.brief.typology(b.use).price_per_m2 or 0.0, -b.depth))
+            b.use = "park"
+            self.fill(b)
+            changed += 1
+        if changed:
+            self.notes.append(f"{changed} block(s) became parks to keep to the design coverage target of {dc:.0%} "
+                              "(the design brief's target, below the legal cap; North Coast resorts build on 12.5-14%).")
+
     def enforce_caps(self):
         L = self.limits
         for _ in range(10):
@@ -730,6 +757,8 @@ def generate(site: Site, brief: LayoutBrief, limits: Limits, land_area_m2: Optio
             if edits and s.name in edits:
                 apply_edits(p, edits[s.name])
             p.fill_all()
+            p.repair_shares()
+            p.meet_design_coverage()
             p.repair_shares()
             p.enforce_caps()
             r = p.result()

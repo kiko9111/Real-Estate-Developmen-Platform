@@ -140,6 +140,8 @@ class ResortPlan(Plan):
         local_x = [cx + sg * o for o in offs if o not in corridor_off for sg in (-1, 1)]
         reach = min(back - 40, max(y_first + 60, rs.corridor_reach * D))
         lag_end = min(back - 40, y_first + rs.lagoon_reach_m)
+        if rs.lagoon_share > 0:
+            lag_end = min(back - 60, y_first + max(rs.lagoon_reach_m, 0.75 * (back - y_first)))
         water_parts = []
         lagoons = rs.lagoons and n > 0 and half_w / (n + 1) >= 2.4 * rs.lagoon_w_m and lag_end - y_first > 150
         if rs.lagoons and not lagoons:
@@ -150,13 +152,28 @@ class ResortPlan(Plan):
                 # it starts behind the first line, so the beach front stays whole for the best products
                 y0 = y_first + rs.collector_m / 2 + 9 + rs.lagoon_w_m * 0.6
                 line = wavy(y0, lag_end, x, min(rs.lagoon_w_m * 0.45, 25.0), 170, phase=j * 0.7, vertical=True)
-                water_parts.append(line.buffer(rs.lagoon_w_m / 2))
-                water_parts.append(Point(line.coords[-1]).buffer(rs.lagoon_w_m * 0.95))
-                water_parts.append(Point(line.coords[0]).buffer(rs.lagoon_w_m * 0.6))
-                greens.append(line.buffer(rs.lagoon_w_m / 2 + 9))
-                greens.append(Point(line.coords[-1]).buffer(rs.lagoon_w_m * 0.95 + 9))
-                greens.append(Point(line.coords[0]).buffer(rs.lagoon_w_m * 0.6 + 9))
-                start = lag_end + rs.lagoon_w_m
+                if rs.lagoon_share > 0 and corridor_x:
+                    # a large lagoon basin with an uneven shore, sized to its share of the land
+                    target = rs.lagoon_share * site.area_m2 / len(corridor_x)
+                    r = min(max(target / (2 * line.length), rs.lagoon_w_m / 2), 0.3 * half_w)
+                    blobs, d = [], 0.0
+                    while d <= line.length:
+                        p_ = line.interpolate(d)
+                        k_ = 0.75 + 0.5 * abs(math.sin(d / (2.3 * r) + j))
+                        blobs.append(Point(p_.x + 0.25 * r * math.sin(d / (1.7 * r) + j), p_.y).buffer(r * k_))
+                        d += r * 0.5
+                    basin = unary_union(blobs).buffer(4).buffer(-4)
+                    water_parts.append(basin)
+                    greens.append(basin.buffer(9))
+                    start = lag_end + r
+                else:
+                    water_parts.append(line.buffer(rs.lagoon_w_m / 2))
+                    water_parts.append(Point(line.coords[-1]).buffer(rs.lagoon_w_m * 0.95))
+                    water_parts.append(Point(line.coords[0]).buffer(rs.lagoon_w_m * 0.6))
+                    greens.append(line.buffer(rs.lagoon_w_m / 2 + 9))
+                    greens.append(Point(line.coords[-1]).buffer(rs.lagoon_w_m * 0.95 + 9))
+                    greens.append(Point(line.coords[0]).buffer(rs.lagoon_w_m * 0.6 + 9))
+                    start = lag_end + rs.lagoon_w_m
             else:
                 start = y_prom
             if rs.corridor_m > 0 and reach > start:

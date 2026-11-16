@@ -283,8 +283,9 @@ def test_master_plan_modules_terraces_sea_front_gate_and_trees():
     typ = {i: t["key"] for i, t in enumerate(geo["typologies"])}
     chalets = [q for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "chalet" for q in b["b"]]
     straight = [q for q in chalets if q[4] == 0]
-    # terraced rows: long buildings parallel to the sea, no longer than the type allows
-    assert straight and max(q[2] for q in straight) <= 64 + 0.1 and sum(q[2] >= 30 for q in straight) > len(straight) / 2
+    # terraced clusters of two or more units parallel to the sea, no longer than the type allows
+    # (real North Coast plans use short clusters around the lagoons, not long slabs)
+    assert straight and max(q[2] for q in straight) <= 64 + 0.1 and sum(q[2] >= 20 for q in straight) > len(straight) * 0.8
     # lagoon-front buildings turned to the water
     assert any(q[4] != 0 for q in chalets)
     # the lagoons start behind the first line: nothing but beach, roads and the promenade below it
@@ -295,3 +296,17 @@ def test_master_plan_modules_terraces_sea_front_gate_and_trees():
     villas = [b for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "villa"]
     assert villas and all(len(b["plots"]) == len(b["b"]) for b in villas)
     assert geo["gate"] and len(geo["trees"]) > 100
+
+
+def test_resort_follows_north_coast_references():
+    # published Ras El Hekma / Sahel plans: about 12.5-14% coverage, low-rise, large lagoons
+    site = make_site(rectangle(600, 1400))
+    L = Limits(coverage=0.2, max_height_m=24)
+    brief = default_brief()
+    o = _ok(generate(site, brief, L, strategies=["Lagoon resort"])[0])
+    k = o["kpis"]
+    assert k["coverage"] <= brief.design_coverage + 0.005
+    assert 8 <= k["units_per_feddan"] <= 16
+    water = next(u for u in o["land_use"] if u["use"] == "Lagoons and water")
+    assert water["share"] >= 0.08
+    assert max(t.floors for t in brief.typologies if t.key in ("apartment", "serviced")) <= 4

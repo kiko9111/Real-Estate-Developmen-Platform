@@ -131,6 +131,7 @@ class ResortSettings(_M):
     lagoons: bool = False
     lagoon_w_m: float = Field(default=55, gt=5)
     lagoon_reach_m: float = Field(default=320, gt=20)         # how far inland a lagoon runs
+    lagoon_share: float = Field(default=0.0, ge=0, le=0.3)    # size the lagoons to this share of the land
     loop_road_m: float = Field(default=10, gt=0)              # loop roads inside house clusters
     hub_depth_m: float = Field(default=140, ge=0)             # entrance hub at the far end of the spine
     gate_r_m: float = Field(default=34, ge=0)                 # entrance roundabout at the gate; 0 for none
@@ -157,6 +158,9 @@ class LayoutBrief(_M):
     height_bands: list[HeightBand] = []      # blank = the conditions' floors and height everywhere
     default_setback_m: float = Field(default=6.0, ge=0)   # where the conditions give none
     min_block_m2: float = Field(default=1500, gt=0)       # smaller pieces become landscape
+    # the design target for building coverage, below the legal cap: North Coast resorts build on
+    # 12.5-14% of the land (20% at most) and keep the rest for landscape and lagoons. Blank = the cap.
+    design_coverage: Optional[float] = Field(default=0.14, gt=0, le=1)
     depth_premiums: list[DepthPremium] = []
     view_premiums: list[ViewPremium] = []
     site_costs: Literal["from_study", "from_layout"] = "from_study"
@@ -214,10 +218,10 @@ DEFAULT_TYPOLOGIES = [
     Typology(key="chalet", name="Chalet building", kind="block", category="residential", floors=3,
              footprint_w_m=40, footprint_d_m=14, gap_m=16, max_length_m=64, unit_size_m2=110, sellable_share=0.85,
              persons_per_unit=4, price_per_m2=65_000, hard_cost_per_m2=22_000, sales_months=42),
-    Typology(key="apartment", name="Apartment building", kind="block", category="residential", floors=7,
+    Typology(key="apartment", name="Apartment building", kind="block", category="residential", floors=4,
              footprint_w_m=45, footprint_d_m=18, gap_m=22, max_length_m=60, unit_size_m2=120, sellable_share=0.82,
              persons_per_unit=4, price_per_m2=55_000, hard_cost_per_m2=21_000, sales_months=48),
-    Typology(key="serviced", name="Serviced apartments", kind="block", category="serviced", floors=6,
+    Typology(key="serviced", name="Serviced apartments", kind="block", category="serviced", floors=3,
              footprint_w_m=40, footprint_d_m=18, gap_m=20, max_length_m=56, unit_size_m2=75, sellable_share=0.80,
              persons_per_unit=3, price_per_m2=70_000, hard_cost_per_m2=25_000, sales_months=42),
     Typology(key="hotel", name="Hotel", kind="landmark", category="hotel", mode="lease", floors=5,
@@ -231,7 +235,7 @@ DEFAULT_TYPOLOGIES = [
 DEFAULT_STRATEGIES = [
     Strategy(name="Lagoon resort", description="Beach hotel and villas on the first line, chalets around crystal lagoons, "
              "townhouses and apartments behind, an entrance hub on the road.",
-             resort=ResortSettings(lagoons=True), zones=[
+             resort=ResortSettings(lagoons=True, lagoon_share=0.10), zones=[
                  StrategyZone(from_share=0, to_share=0.12, mix={"villa": 0.75, "hotel": 0.25}),
                  StrategyZone(from_share=0.12, to_share=0.5, mix={"chalet": 0.75, "twin": 0.25}),
                  StrategyZone(from_share=0.5, to_share=1, mix={"apartment": 0.5, "serviced": 0.3, "townhouse": 0.2})]),
@@ -249,7 +253,7 @@ DEFAULT_STRATEGIES = [
                  StrategyZone(from_share=0.55, to_share=1, mix={"apartment": 0.7, "townhouse": 0.3})]),
     Strategy(name="Compact chalets", description="Staggered sea-facing chalet buildings on most of the land with wide view "
              "corridors, villas on the first line, apartments at the back.",
-             resort=ResortSettings(corridor_every_m=220, corridor_m=36, lagoons=True, lagoon_reach_m=250), zones=[
+             resort=ResortSettings(corridor_every_m=220, corridor_m=36, lagoons=True, lagoon_reach_m=250, lagoon_share=0.08), zones=[
                  StrategyZone(from_share=0, to_share=0.1, mix={"villa": 0.7, "hotel": 0.3}),
                  StrategyZone(from_share=0.1, to_share=0.6, mix={"chalet": 1.0}),
                  StrategyZone(from_share=0.6, to_share=1, mix={"apartment": 0.6, "serviced": 0.4})]),
