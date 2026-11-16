@@ -138,6 +138,14 @@ class ResortSettings(_M):
     beach_club: bool = True                                   # a beach club on the first line by the plaza
     second_row_lane_m: float = Field(default=10, ge=0)        # lane behind the first row of sea-front lots
     block_margin_m: float = Field(default=6, ge=0)            # buildings keep this far from a block edge
+    # the village fabric of North Coast resorts: gently curving lanes across each block, small
+    # buildings in rows on both sides of every lane, lagoon fingers between the rows
+    fabric: bool = True
+    lane_m: float = Field(default=10, gt=0)                   # lanes between the rows
+    curve_m: float = Field(default=9, ge=0)                   # how far the lanes curve
+    curve_wave_m: float = Field(default=260, gt=20)
+    channel_m: float = Field(default=22, gt=0)                # lagoon fingers between back-to-back rows
+    channel_every: int = Field(default=0, ge=0)               # a finger every n rows of plots (0 = none)
 
 
 class Strategy(_M):
@@ -216,13 +224,13 @@ DEFAULT_TYPOLOGIES = [
              footprint_w_m=48, footprint_d_m=13, plot_w_m=56, plot_d_m=28, units_per_building=6,
              sellable_share=0.92, persons_per_unit=5, price_per_m2=72_000, hard_cost_per_m2=24_000, sales_months=42),
     Typology(key="chalet", name="Chalet building", kind="block", category="residential", floors=3,
-             footprint_w_m=40, footprint_d_m=14, gap_m=16, max_length_m=64, unit_size_m2=110, sellable_share=0.85,
+             footprint_w_m=30, footprint_d_m=14, gap_m=16, max_length_m=64, unit_size_m2=110, sellable_share=0.85,
              persons_per_unit=4, price_per_m2=65_000, hard_cost_per_m2=22_000, sales_months=42),
     Typology(key="apartment", name="Apartment building", kind="block", category="residential", floors=4,
-             footprint_w_m=45, footprint_d_m=18, gap_m=22, max_length_m=60, unit_size_m2=120, sellable_share=0.82,
+             footprint_w_m=36, footprint_d_m=16, gap_m=22, max_length_m=60, unit_size_m2=120, sellable_share=0.82,
              persons_per_unit=4, price_per_m2=55_000, hard_cost_per_m2=21_000, sales_months=48),
     Typology(key="serviced", name="Serviced apartments", kind="block", category="serviced", floors=3,
-             footprint_w_m=40, footprint_d_m=18, gap_m=20, max_length_m=56, unit_size_m2=75, sellable_share=0.80,
+             footprint_w_m=32, footprint_d_m=16, gap_m=20, max_length_m=56, unit_size_m2=75, sellable_share=0.80,
              persons_per_unit=3, price_per_m2=70_000, hard_cost_per_m2=25_000, sales_months=42),
     Typology(key="hotel", name="Hotel", kind="landmark", category="hotel", mode="lease", floors=5,
              block_cover=0.30, unit_size_m2=45, sellable_share=0.70, persons_per_unit=2,
@@ -235,25 +243,25 @@ DEFAULT_TYPOLOGIES = [
 DEFAULT_STRATEGIES = [
     Strategy(name="Lagoon resort", description="Beach hotel and villas on the first line, chalets around crystal lagoons, "
              "townhouses and apartments behind, an entrance hub on the road.",
-             resort=ResortSettings(lagoons=True, lagoon_share=0.10), zones=[
+             resort=ResortSettings(channel_every=1, local_every_m=300, corridor_m=0), zones=[
                  StrategyZone(from_share=0, to_share=0.12, mix={"villa": 0.75, "hotel": 0.25}),
                  StrategyZone(from_share=0.12, to_share=0.5, mix={"chalet": 0.75, "twin": 0.25}),
                  StrategyZone(from_share=0.5, to_share=1, mix={"apartment": 0.5, "serviced": 0.3, "townhouse": 0.2})]),
     Strategy(name="Villa resort", description="Low-rise: villa and twin-house clusters on loop roads around pocket parks, "
              "townhouses in the middle, chalets at the back.",
-             resort=ResortSettings(corridor_every_m=260, collector_every_m=200), zones=[
+             resort=ResortSettings(corridor_every_m=260, collector_every_m=200, channel_every=2), zones=[
                  StrategyZone(from_share=0, to_share=0.3, mix={"villa": 0.85, "hotel": 0.15}),
                  StrategyZone(from_share=0.3, to_share=0.65, mix={"twin": 0.5, "townhouse": 0.5}),
                  StrategyZone(from_share=0.65, to_share=1, mix={"chalet": 0.7, "townhouse": 0.3})]),
     Strategy(name="Hotel and serviced", description="Two beach hotels, serviced apartments and chalets facing the sea, "
              "apartments at the back.",
-             resort=ResortSettings(corridor_every_m=240), zones=[
+             resort=ResortSettings(corridor_every_m=240, channel_every=2), zones=[
                  StrategyZone(from_share=0, to_share=0.12, mix={"hotel": 0.6, "villa": 0.4}),
                  StrategyZone(from_share=0.12, to_share=0.55, mix={"serviced": 0.55, "chalet": 0.45}),
                  StrategyZone(from_share=0.55, to_share=1, mix={"apartment": 0.7, "townhouse": 0.3})]),
     Strategy(name="Compact chalets", description="Staggered sea-facing chalet buildings on most of the land with wide view "
              "corridors, villas on the first line, apartments at the back.",
-             resort=ResortSettings(corridor_every_m=220, corridor_m=36, lagoons=True, lagoon_reach_m=250, lagoon_share=0.08), zones=[
+             resort=ResortSettings(corridor_every_m=220, corridor_m=36, channel_every=2), zones=[
                  StrategyZone(from_share=0, to_share=0.1, mix={"villa": 0.7, "hotel": 0.3}),
                  StrategyZone(from_share=0.1, to_share=0.6, mix={"chalet": 1.0}),
                  StrategyZone(from_share=0.6, to_share=1, mix={"apartment": 0.6, "serviced": 0.4})]),

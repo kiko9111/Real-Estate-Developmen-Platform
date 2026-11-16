@@ -258,7 +258,7 @@ class ImportedPlan(ResortPlan):
             if t is not None and t.kind in ("detached", "row") and b.area < 2.5 * t.plot_w_m * t.plot_d_m:
                 return self._one_house(b, t)
             return super().fill(b)
-        b.buildings, b.plots, b.road_poly, b.green_poly = [], [], None, None
+        b.buildings, b.plots, b.road_poly, b.green_poly, b.water_poly = [], [], None, None, None
         allowed = self.floors_for(t, b.depth, b.floors_cap)
         for part, floors in drawn:
             r = part.minimum_rotated_rectangle
@@ -274,7 +274,7 @@ class ImportedPlan(ResortPlan):
 
     def _one_house(self, b: Block, t):
         """A plot drawn for one house: the house in the middle, turned to the plot."""
-        b.buildings, b.plots, b.road_poly, b.green_poly = [], [], None, None
+        b.buildings, b.plots, b.road_poly, b.green_poly, b.water_poly = [], [], None, None, None
         floors = self.floors_for(t, b.depth, b.floors_cap)
         if floors <= 0:
             return

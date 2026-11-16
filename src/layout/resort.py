@@ -71,6 +71,14 @@ def wavy(x0: float, x1: float, y: float, amp: float, wave: float, phase: float =
     return LineString(pts)
 
 
+def _lines(g) -> list:
+    if g.is_empty:
+        return []
+    if g.geom_type == "LineString":
+        return [g]
+    return [x for x in getattr(g, "geoms", []) if x.geom_type == "LineString"]
+
+
 class ResortPlan(Plan):
 
     # ------------------------------------------------------------ the plan's structure
@@ -256,19 +264,26 @@ class ResortPlan(Plan):
     # ------------------------------------------------------------ building on a block
 
     def fill(self, b: Block):
-        b.buildings, b.plots, b.road_poly, b.green_poly = [], [], None, None
+        b.buildings, b.plots, b.road_poly, b.green_poly, b.water_poly = [], [], None, None, None
         t = self.typ_of(b)
         if t is None:
+            if b.use == "park":
+                self.fill_park(b)
             return
         floors = self.floors_for(t, b.depth, b.floors_cap)
         if floors <= 0:
             return
+        fabric = self.strategy.resort.fabric and b.kind not in ("front", "club")
         if t.kind in ("detached", "row"):
             if b.kind == "front" and self._sea_rows(b, t, floors):
+                return
+            if fabric and self._fabric(b, t, floors):
                 return
             if not self._cluster(b, t, floors):
                 super().fill(b)
         elif t.kind == "block":
+            if fabric and self._fabric(b, t, floors):
+                return
             if not (t.max_length_m and self._terraces(b, t, floors)):
                 self._staggered(b, t, floors)
         elif t.category == "hotel":
@@ -276,6 +291,96 @@ class ResortPlan(Plan):
                 super().fill(b)
         else:
             super().fill(b)
+
+    def _fabric(self, b: Block, t, floors) -> bool:
+        """The village fabric of North Coast resorts: lanes curving gently across the block, parallel to
+        the sea, with a row of small buildings on each side of every lane, each facing its lane. Behind
+        the rows, back to back, either the gardens meet or a lagoon finger runs, so the rows on both
+        sides of it look onto water."""
+        rs = self.strategy.resort
+        between = self.limits.between_buildings_m or 0.0
+        fw, fd = t.footprint_w_m, t.footprint_d_m
+        if t.kind in ("detached", "row"):
+            pw, pd = t.plot_w_m, t.plot_d_m
+            front = max(3.0, min(8.0, (pd - fd) * 0.45))
+        else:
+            pw = fw + max(between, min(t.gap_m, 8.0))
+            front = 5.0
+            pd = fd + front + max(4.0, between / 2)
+        lane = rs.lane_m
+        minx, miny, maxx, maxy = b.poly.bounds
+        depth = maxy - miny
+        pair = 2 * pd + lane
+
+        def seam(k):
+            return rs.channel_m if rs.channel_every and k % rs.channel_every == 0 else 0.0
+
+        n, total = 0, 0.0
+        while True:
+            nxt = total + pair + (seam(n - 1) if n else 0.0)
+            if nxt > depth - 2:
+                break
+            n, total = n + 1, nxt
+        if n == 0:
+            return False
+        amp = rs.curve_m
+        phase = b.id * 1.37
+
+        def curve(y):
+            return wavy(minx - 30, maxx + 30, y, amp, rs.curve_wave_m, phase=phase, step=6.0)
+
+        def band(y0, y1):
+            a, c = curve(y0), curve(y1)
+            return Polygon(list(a.coords) + list(reversed(c.coords))).buffer(0)
+
+        inside = prep(b.poly.buffer(0.3))
+        inner = prep(b.poly.buffer(-2.0))
+        keep_off = b.poly.buffer(-(rs.block_margin_m + 2), join_style=2)
+        lanes, channels, plots, out = [], [], [], []
+        y = miny + (depth - total) / 2
+        for k in range(n):
+            lanes.append(band(y + pd, y + pd + lane).intersection(b.poly))
+            for yf, down in ((y + pd, True), (y + pd + lane, False)):
+                # walk each stretch of the lane's edge inside the block, plots centred on the stretch
+                for line in _lines(curve(yf).intersection(b.poly)):
+                    L = line.length
+                    m = int(L // pw)
+                    s0 = (L - m * pw) / 2
+                    for i in range(m):
+                        a = line.interpolate(s0 + i * pw)
+                        c = line.interpolate(s0 + (i + 1) * pw)
+                        tx, ty = c.x - a.x, c.y - a.y
+                        tl = math.hypot(tx, ty) or 1.0
+                        tx, ty = tx / tl, ty / tl
+                        nx, ny = (ty, -tx) if down else (-ty, tx)
+                        q = Polygon([(a.x, a.y), (c.x, c.y), (c.x + nx * pd, c.y + ny * pd),
+                                     (a.x + nx * pd, a.y + ny * pd)])
+                        mx, my = (a.x + c.x) / 2 + nx * (front + fd / 2), (a.y + c.y) / 2 + ny * (front + fd / 2)
+                        ang = math.degrees(math.atan2(ty, tx))
+                        # the building must sit wholly in the block; its plot may lose a corner to the edge
+                        if not q.is_valid or not inner.contains(rect(mx, my, fw, fd, ang)):
+                            continue
+                        if not inside.contains(q):
+                            q = q.intersection(b.poly)
+                            if q.geom_type != "Polygon" or q.area < 0.6 * pw * pd:
+                                continue
+                        plots.append(q)
+                        out.append([mx, my, fw, fd, ang, floors])
+            y += pair
+            if k < n - 1:
+                w = seam(k)
+                if w > 0 and not keep_off.is_empty:
+                    ch = band(y, y + w).intersection(keep_off).buffer(-3).buffer(3)
+                    channels += [g for g in _polys(ch) if g.area > 300]
+                y += w
+        if len(out) < 2:
+            return False
+        b.buildings = out
+        b.road_poly = unary_union([g for g in lanes if not g.is_empty])
+        b.water_poly = unary_union(channels) if channels else None
+        if t.kind in ("detached", "row"):
+            b.plots = [list(q.exterior.coords)[:-1] for q in plots]
+        return True
 
     def _sea_rows(self, b: Block, t, floors) -> bool:
         """Sea-front lots in rows facing the beach: the first row on the promenade road, a second row

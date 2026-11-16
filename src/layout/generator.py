@@ -27,7 +27,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from shapely.geometry import MultiPolygon, Point, Polygon, box
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -52,6 +52,8 @@ class Block:
     kind: str = ""                                  # what the block is in the plan: superblock, front, ...
     road_poly: Optional[Polygon] = None             # a loop road inside the block (house clusters)
     green_poly: Optional[Polygon] = None            # a pocket park inside the block
+    water_poly: Optional[Polygon] = None            # lagoon fingers between the rows of a block
+    lake: bool = False                              # a park block that holds a lagoon lake
     locked: bool = False                            # set by the team: the mix repair leaves it alone
     floors_cap: Optional[int] = None                # set by the team: no more floors than this
 
@@ -68,9 +70,13 @@ class Block:
         return self.green_poly.area if self.green_poly is not None else 0.0
 
     @property
+    def water_area(self) -> float:
+        return self.water_poly.area if self.water_poly is not None else 0.0
+
+    @property
     def net_area(self) -> float:
-        """The block less its inner road and pocket park: the plots themselves."""
-        return self.area - self.road_area - self.green_area
+        """The block less its inner road, pocket park and lagoon fingers: the plots themselves."""
+        return self.area - self.road_area - self.green_area - self.water_area
 
     @property
     def depth(self) -> float:
@@ -92,6 +98,7 @@ class Plan:
         self.water = Polygon()
         self.green = Polygon()      # parks that are part of the plan's structure (spine, corridors, plaza)
         self.gate = None            # where the entrance gate is, if the plan has one
+        self.lake = None            # the central lagoon lake, when blocks became one
         self.bands = self._bands()
 
     # ------------------------------------------------------------ areas
@@ -104,7 +111,12 @@ class Plan:
 
     def open_area(self) -> float:
         return (self.fixed_open() + sum(b.area for b in self.blocks if b.use == "park")
-                + sum(b.green_area for b in self.blocks if b.use != "park"))
+                + sum(b.green_area + b.water_area for b in self.blocks if b.use != "park"))
+
+    def all_water(self):
+        """The plan's lagoons with the fingers drawn inside blocks."""
+        inner = [b.water_poly for b in self.blocks if b.water_poly is not None and (b.use != "park" or b.lake)]
+        return unary_union([self.water] + inner) if inner else self.water
 
     # ------------------------------------------------------------ height
 
@@ -256,8 +268,9 @@ class Plan:
     # ------------------------------------------------------------ step 6
 
     def fill(self, b: Block):
-        b.buildings, b.plots, b.road_poly, b.green_poly = [], [], None, None
+        b.buildings, b.plots, b.road_poly, b.green_poly, b.water_poly = [], [], None, None, None
         if b.use == "park":
+            self.fill_park(b)
             return
         key = self.brief.services_typology if b.use == "services" else b.use
         if not key:
@@ -307,6 +320,13 @@ class Plan:
             r = box(c.x - fw / 2, c.y - fd / 2, c.x + fw / 2, c.y + fd / 2)
             if pb.contains(r):
                 b.buildings.append([c.x, c.y, fw, fd, 0.0, floors])
+
+    def fill_park(self, b: Block):
+        """A park block; a lake block holds a lagoon with a green bank all round."""
+        b.water_poly = None
+        if b.lake:
+            g = self.lake.intersection(b.poly) if self.lake is not None else _shore(b.poly.buffer(-14), b.id)
+            b.water_poly = g if not g.is_empty and g.area > 500 else None
 
     def fill_all(self):
         for b in self.blocks:
@@ -437,6 +457,12 @@ class Plan:
         if not dc or (L.coverage and dc >= L.coverage):
             return
         target = dc * self.land
+        # with lagoons in the plan the blocks become one central lagoon lake, otherwise one central park:
+        # side by side, starting from the block nearest the middle of the land, as the real plans do
+        lake = bool(getattr(self.strategy.resort, "channel_every", 0)) and self.strategy.pattern != "grid"
+        mid_y = self.site.depth_m * 0.5
+        mid_x = (self.site.polygon.bounds[0] + self.site.polygon.bounds[2]) / 2
+        taken = []
         changed = 0
         for _ in range(len(self.blocks)):
             foot = self.totals(self.measure())["footprint"]
@@ -447,12 +473,34 @@ class Plan:
                      and (self.water.is_empty or b.poly.distance(self.water) > 30)]
             if not cands:
                 break
-            b = min(cands, key=lambda b: (self.brief.typology(b.use).price_per_m2 or 0.0, -b.depth))
+            if taken:
+                near = [b for b in cands if min(b.poly.distance(o.poly) for o in taken) < 45]
+                cands = near or cands
+                c = unary_union([o.poly for o in taken]).centroid
+                b = min(cands, key=lambda b: b.poly.centroid.distance(c))
+            else:
+                b = min(cands, key=lambda b: Point(mid_x, mid_y).distance(b.poly.centroid))
             b.use = "park"
+            b.lake = lake
             self.fill(b)
+            taken.append(b)
             changed += 1
+        if lake and taken:
+            # one lake over the blocks and the short roads between them, with an uneven shore and a green bank
+            U = unary_union([o.poly for o in taken])
+            filled = U.buffer(22, join_style=1).buffer(-22, join_style=1)
+            R = filled.intersection(self.roads)               # the roads between them give way to the lake
+            G = filled.intersection(self.green)
+            avail = unary_union([U, R, G])
+            self.lake = _shore(filled.buffer(-14), len(taken)).intersection(avail)
+            self.roads = self.roads.difference(R)
+            self.green = unary_union([self.green.difference(self.lake), R.difference(self.lake)])
+            self.water = unary_union([self.water, self.lake.difference(U)])
+            for o in taken:
+                self.fill(o)
         if changed:
-            self.notes.append(f"{changed} block(s) became parks to keep to the design coverage target of {dc:.0%} "
+            what = "a central lagoon lake" if lake else "a central park"
+            self.notes.append(f"{changed} block(s) became {what} to keep to the design coverage target of {dc:.0%} "
                               "(the design brief's target, below the legal cap; North Coast resorts build on 12.5-14%).")
 
     def enforce_caps(self):
@@ -503,8 +551,9 @@ class Plan:
         use = [
             ("Roads", self.roads_area()),
             ("Beach", self.beach.area),
-            ("Lagoons and water", self.water.area),
-            ("Parks, green spine and view corridors", self.green.area + sum(b.area for b in self.blocks if b.use == "park")
+            ("Lagoons and water", self.all_water().area),
+            ("Parks, green spine and view corridors", self.green.area
+             + sum(b.area - b.water_area for b in self.blocks if b.use == "park")
              + sum(b.green_area for b in self.blocks if b.use != "park")),
             ("Setbacks and landscape strips", self.setbacks.area + self.leftover.area),
             ("Services plots", sum(b.net_area for b in self.blocks if b.use == "services")),
@@ -552,7 +601,8 @@ class Plan:
         if not rules:
             return out
         from shapely.geometry import Point
-        water = self.water if not self.water.is_empty else None
+        water = self.all_water()
+        water = water if not water.is_empty else None
         parks = unary_union([self.green] + [b.poly for b in self.blocks if b.use == "park"]
                             + [b.green_poly for b in self.blocks if b.green_poly is not None])
         parks = None if parks.is_empty else parks
@@ -612,14 +662,14 @@ class Plan:
             "roads": [_rings(g) for g in _polys(unary_union([self.roads] + inner_roads))],
             "landscape": [_rings(g) for g in _polys(unary_union([self.setbacks, self.leftover]))],
             "beach": [_rings(g) for g in _polys(self.beach)],
-            "water": [_rings(g) for g in _polys(self.water)],
+            "water": [_rings(g) for g in _polys(self.all_water())],
             "green": [_rings(g) for g in _polys(unary_union(greens))],
             "blocks": blocks,
             "bounds": [round(v, 1) for v in self.site.polygon.bounds],
             "typologies": [{"key": t.key, "name": t.name, "category": t.category, "kind": t.kind}
                            for t in self.brief.typologies],
             "bands": [{"name": b.name, "from": b.from_depth_m, "to": b.to_depth_m} for b in self.bands],
-            "trees": _trees(unary_union(parks)),
+            "trees": _trees(unary_union(parks).difference(self.all_water())),
             "gate": [round(v, 1) for v in self.gate] if self.gate else None,
             "clubs": [b.id for b in self.blocks if b.kind == "club"],
         }
@@ -829,6 +879,42 @@ def _trees(g, spacing: float = 14.0, cap: int = 6000) -> list:
         y += spacing * 0.87
         j += 1
     return out
+
+
+def _shore(g, seed: float = 0.0):
+    """An uneven, rounded shoreline inside an outline: the edge pulled in by a varying amount."""
+    out = []
+    for p in _polys(g):
+        mrr = p.minimum_rotated_rectangle
+        xs, ys = mrr.exterior.coords.xy
+        short = min(math.hypot(xs[1] - xs[0], ys[1] - ys[0]), math.hypot(xs[2] - xs[1], ys[2] - ys[1]))
+        r = min(40.0, short * 0.25)
+        p = p.buffer(-r, join_style=1).buffer(r, join_style=1) if p.buffer(-r).area > 0 else p
+        if p.is_empty:
+            continue
+        amp = min(45.0, max(6.0, short * 0.22))
+        ring = LineString(p.exterior.coords)
+        L = ring.length
+        n = max(12, int(L / 12))
+        pts = []
+        for i in range(n):
+            q = ring.interpolate(L * i / n)
+            pts.append((q.x, q.y))
+        core = p.buffer(0)
+        poly = []
+        cx, cy = core.centroid.x, core.centroid.y
+        for i, (x, y) in enumerate(pts):
+            s_ = L * i / n
+            d = 3 + amp * (0.5 + 0.3 * math.sin(s_ / (0.9 * short + 20) * 2 + seed)
+                           + 0.2 * math.sin(s_ / 23 + 2.3 * seed))
+            vx, vy = cx - x, cy - y
+            vl = math.hypot(vx, vy) or 1.0
+            poly.append((x + vx / vl * d, y + vy / vl * d))
+        q = Polygon(poly).buffer(0)
+        if not q.is_empty:
+            out.append(q.buffer(8, join_style=1).buffer(-8, join_style=1).intersection(core))
+    u = unary_union(out) if out else Polygon()
+    return u if not u.is_empty else Polygon()
 
 
 def _thin(b: Block, s: float):

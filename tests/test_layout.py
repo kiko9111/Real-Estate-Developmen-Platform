@@ -209,7 +209,11 @@ def test_resort_pattern_draws_beach_lagoons_corridors_and_house_clusters():
 
 def test_small_plot_skips_lagoons_with_a_note():
     site = make_site(rectangle(250, 500))
-    o = _ok(generate(site, default_brief(), Limits(coverage=0.25, max_floors=4), strategies=["Lagoon resort"])[0])
+    brief = default_brief()
+    s0 = brief.strategies[0]
+    brief.strategies[0] = s0.model_copy(update={"resort": s0.resort.model_copy(
+        update={"lagoons": True, "lagoon_share": 0.1, "channel_every": 0})})
+    o = _ok(generate(site, brief, Limits(coverage=0.25, max_floors=4), strategies=["Lagoon resort"])[0])
     assert not o["geometry"]["water"]
     assert any("too small for lagoons" in n for n in o["notes"])
 
@@ -275,19 +279,18 @@ def test_narrow_plot_still_fills_its_blocks():
         assert len(empty) <= 1, (name, [b["use"] for b in empty])
 
 
-def test_master_plan_modules_terraces_sea_front_gate_and_trees():
+def test_master_plan_modules_village_fabric_sea_front_gate_and_trees():
     site = make_site(rectangle(600, 1400))
     L = Limits(coverage=0.2, max_height_m=24)
     o = _ok(generate(site, default_brief(), L, strategies=["Lagoon resort"])[0])
     geo = o["geometry"]
     typ = {i: t["key"] for i, t in enumerate(geo["typologies"])}
     chalets = [q for b in geo["blocks"] if b["typ"] is not None and typ[b["typ"]] == "chalet" for q in b["b"]]
-    straight = [q for q in chalets if q[4] == 0]
-    # terraced clusters of two or more units parallel to the sea, no longer than the type allows
-    # (real North Coast plans use short clusters around the lagoons, not long slabs)
-    assert straight and max(q[2] for q in straight) <= 64 + 0.1 and sum(q[2] >= 20 for q in straight) > len(straight) * 0.8
-    # lagoon-front buildings turned to the water
-    assert any(q[4] != 0 for q in chalets)
+    # the village fabric: small buildings in rows along gently curving lanes, parallel to the sea
+    assert len(chalets) > 60
+    assert all(abs(q[4]) < 25 for q in chalets) and any(abs(q[4]) > 2 for q in chalets)
+    # lagoon fingers between the rows: most chalets look onto water
+    assert o["premiums"]["chalet"].get("Lagoon view", 0) > 0.6
     # the lagoons start behind the first line: nothing but beach, roads and the promenade below it
     rs = default_brief().strategies[0].resort
     first_line = 40 + rs.promenade_m + rs.first_line_m
